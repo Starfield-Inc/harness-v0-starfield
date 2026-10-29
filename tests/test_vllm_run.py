@@ -227,7 +227,8 @@ class RecordedSettingsTest(unittest.TestCase):
 
     def test_package_versions_report_missing_packages_as_none(self):
         self.assertIsNone(v.package_versions(("no-such-package-xyz",))["no-such-package-xyz"])
-        self.assertIsInstance(v.package_versions(("pip",))["pip"], str)
+        with mock.patch("importlib.metadata.version", return_value="1.2.3"):
+            self.assertEqual(v.package_versions(("any-package",)), {"any-package": "1.2.3"})
 
     def test_server_and_bench_flags_are_part_of_the_recorded_settings(self):
         rec = v.recorded_settings(settings())
