@@ -5,6 +5,7 @@ import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from harness import vllm_run as v
 
