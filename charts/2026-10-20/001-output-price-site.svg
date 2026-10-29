@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="576pt" height="302.4pt" viewBox="0 0 576 302.4" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 302.4 
+L 576 302.4 
+L 576 0 
+L 0 0 
+z
+" style="fill: #fcfcfb"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 197.985 200.64 
+L 531.36 200.64 
+L 531.36 56.64 
+L 197.985 56.64 
+L 197.985 200.64 
+z
+" style="fill: none"/>
+   </g>
+   <g id="matplotlib.axis_1">
+    <g id="xtick_1">
+     <g id="line2d_1">
+      <path d="M 197.985 200.64 
+L 197.985 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_2"/>
+     <g id="text_1">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="197.985" y="215.477891" transform="rotate(-0 197.985 215.477891)">0</text>
+     </g>
+    </g>
+    <g id="xtick_2">
+     <g id="line2d_3">
+      <path d="M 264.66 200.64 
+L 264.66 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_4"/>
+     <g id="text_2">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="264.66" y="215.477891" transform="rotate(-0 264.66 215.477891)">2</text>
+     </g>
+    </g>
+    <g id="xtick_3">
+     <g id="line2d_5">
+      <path d="M 331.335 200.64 
+L 331.335 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_6"/>
+     <g id="text_3">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="331.335" y="215.477891" transform="rotate(-0 331.335 215.477891)">4</text>
+     </g>
+    </g>
+    <g id="xtick_4">
+     <g id="line2d_7">
+      <path d="M 398.01 200.64 
+L 398.01 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_8"/>
+     <g id="text_4">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="398.01" y="215.477891" transform="rotate(-0 398.01 215.477891)">6</text>
+     </g>
+    </g>
+    <g id="xtick_5">
+     <g id="line2d_9">
+      <path d="M 464.685 200.64 
+L 464.685 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_10"/>
+     <g id="text_5">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="464.685" y="215.477891" transform="rotate(-0 464.685 215.477891)">8</text>
+     </g>
+    </g>
+    <g id="xtick_6">
+     <g id="line2d_11">
+      <path d="M 531.36 200.64 
+L 531.36 56.64 
+" clip-path="url(#p2271bc49f9)" style="fill: none; stroke: #e6e5e1; stroke-width: 0.24; stroke-linecap: square"/>
+     </g>
+     <g id="line2d_12"/>
+     <g id="text_6">
+      <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #52514e" x="531.36" y="215.477891" transform="rotate(-0 531.36 215.477891)">10</text>
+     </g>
+    </g>
+    <g id="text_7">
+     <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="197.985" y="234.858516" transform="rotate(-0 197.985 234.858516)">Output price, USD per 1M tokens</text>
+    </g>
+   </g>
+   <g id="matplotlib.axis_2"/>
+   <g id="patch_3">
+    <path d="M 197.985 69.36 
+L 396.09 69.36 
+Q 398.01 69.36 398.01 71.28 
+L 398.01 78 
+Q 398.01 79.92 396.09 79.92 
+L 197.985 79.92 
+z
+" clip-path="url(#p2271bc49f9)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 197.985 105.36 
+L 529.44 105.36 
+Q 531.36 105.36 531.36 107.28 
+L 531.36 114 
+Q 531.36 115.92 529.44 115.92 
+L 197.985 115.92 
+z
+" clip-path="url(#p2271bc49f9)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 197.985 141.36 
+L 529.44 141.36 
+Q 531.36 141.36 531.36 143.28 
+L 531.36 150 
+Q 531.36 151.92 529.44 151.92 
+L 197.985 151.92 
+z
+" clip-path="url(#p2271bc49f9)" style="fill: #2a78d6"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 197.985 177.36 
+L 529.44 177.36 
+Q 531.36 177.36 531.36 179.28 
+L 531.36 186 
+Q 531.36 187.92 529.44 187.92 
+L 197.985 187.92 
+z
+" clip-path="url(#p2271bc49f9)" style="fill: #2a78d6"/>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="401.85" y="77.627754" transform="rotate(-0 401.85 77.627754)">$6</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="535.2" y="113.627754" transform="rotate(-0 535.2 113.627754)">$10</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="535.2" y="149.627754" transform="rotate(-0 535.2 149.627754)">$10</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="535.2" y="185.627754" transform="rotate(-0 535.2 185.627754)">$10</text>
+   </g>
+  </g>
+  <g id="text_12">
+   <text style="font-weight: 700; font-size: 15px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="24.837656" transform="rotate(-0 19.2 24.837656)">At $2 per million input tokens, output prices run from</text>
+  </g>
+  <g id="text_13">
+   <text style="font-weight: 700; font-size: 15px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="43.077656" transform="rotate(-0 19.2 43.077656)">$6 to $10</text>
+  </g>
+  <g id="text_14">
+   <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="256.63875" transform="rotate(-0 19.2 256.63875)">Prices read by hand on 20 Oct 2026</text>
+  </g>
+  <g id="text_15">
+   <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="266.71875" transform="rotate(-0 19.2 266.71875)">Short-context rates. All four models list $2.00 per 1M input tokens. This is not a ranking of models.</text>
+  </g>
+  <g id="text_16">
+   <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="276.83375" transform="rotate(-0 19.2 276.83375)">Method: starfield.net/research/methodology/ | Raw data (CSV): starfield.net/assets/research/price-sheet-2026-10-20.csv |</text>
+  </g>
+  <g id="text_17">
+   <text style="font-size: 8px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="286.87875" transform="rotate(-0 19.2 286.87875)">Corrections log: starfield.net/research/corrections/</text>
+  </g>
+  <g id="text_18">
+   <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="72.357305" transform="rotate(-0 19.2 72.357305)">xAI grok-4.7</text>
+  </g>
+  <g id="text_19">
+   <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="83.298516" transform="rotate(-0 19.2 83.298516)">published by xAI</text>
+  </g>
+  <g id="text_20">
+   <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="108.357305" transform="rotate(-0 19.2 108.357305)">Anthropic Claude Sonnet 5.5</text>
+  </g>
+  <g id="text_21">
+   <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="119.298516" transform="rotate(-0 19.2 119.298516)">published by Anthropic</text>
+  </g>
+  <g id="text_22">
+   <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="144.357305" transform="rotate(-0 19.2 144.357305)">OpenAI gpt-6.1-sol</text>
+  </g>
+  <g id="text_23">
+   <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="155.298516" transform="rotate(-0 19.2 155.298516)">published by OpenAI</text>
+  </g>
+  <g id="text_24">
+   <text style="font-size: 11.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #0b0b0b" x="19.2" y="180.357305" transform="rotate(-0 19.2 180.357305)">Google gemini-4-argon</text>
+  </g>
+  <g id="text_25">
+   <text style="font-size: 9.5px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #52514e" x="19.2" y="191.298516" transform="rotate(-0 19.2 191.298516)">published by Google</text>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p2271bc49f9">
+   <rect x="197.985" y="56.64" width="333.375" height="144"/>
+  </clipPath>
+ </defs>
+</svg>

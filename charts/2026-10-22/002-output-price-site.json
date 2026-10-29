@@ -1,0 +1,37 @@
+{
+  "id": "002-output-price-site",
+  "title": "At $2 per million input tokens, output prices run from $6 to $10",
+  "data": "data/prices/price-sheet-2026-10-22.csv",
+  "date_col": "read_date",
+  "date_text": "Prices read on 22 Oct 2026",
+  "value_col": "output_usd_per_1m",
+  "value_format": "${:g}",
+  "axis_label": "Output price, USD per 1M tokens",
+  "label_col": "label",
+  "error_col": null,
+  "bars": [
+    {
+      "provider": "xAI",
+      "model": "grok-4.7",
+      "name": "xAI grok-4.7"
+    },
+    {
+      "provider": "Anthropic",
+      "model": "Claude Sonnet 5.5",
+      "name": "Anthropic Claude Sonnet 5.5"
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-6.1-sol",
+      "name": "OpenAI gpt-6.1-sol"
+    },
+    {
+      "provider": "Google",
+      "model": "gemini-4-argon (Standard)",
+      "name": "Google gemini-4-argon"
+    }
+  ],
+  "note": "Short-context rates. All four models list $2.00 per 1M input tokens. This is not a ranking of models.",
+  "links": "Method: starfield.net/research/methodology/  |  Raw data (CSV): starfield.net/assets/research/price-sheet-2026-10-22.csv  |  Corrections log: starfield.net/research/corrections/",
+  "height": 630
+}

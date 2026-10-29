@@ -1,0 +1,5 @@
+read_date,provider,model,input_usd_per_1m,output_usd_per_1m,unit,source_url,page_date_if_shown,how_read,label
+2026-10-22,Google,gemini-4-argon (Standard),2,10,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google
+2026-10-22,Google,gemini-4-argon (Standard) from 2026-12-01,4,20,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google
+2026-10-22,Google,gemini-3.8-flash,0.75,3.75,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google
+2026-10-22,Google,gemini-3.8-flash from 2027-01-01,1.5,7.5,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google

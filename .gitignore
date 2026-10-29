@@ -1,0 +1,12 @@
+.env
+*.key
+*.pem
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# Local notes, not published
+DECISIONS.md
+PROGRESS.md
+feature_list.json

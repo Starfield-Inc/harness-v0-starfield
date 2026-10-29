@@ -1,0 +1,8 @@
+{
+  "models": [
+    {"provider": "xAI", "model": "grok-4.7"},
+    {"provider": "Anthropic", "model": "Claude Sonnet 5.5"},
+    {"provider": "OpenAI", "model": "gpt-6.1-sol"},
+    {"provider": "Google", "model": "gemini-4-argon (Standard)"}
+  ]
+}

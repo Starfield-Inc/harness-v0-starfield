@@ -1,0 +1,308 @@
+{
+  "_about": "Where to find each price on each page. No prices are stored here. See docs/price-reader.md.",
+  "pages": [
+    {
+      "provider": "Anthropic",
+      "url": "https://claude.com/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "/ MTok",
+      "models": [
+        {
+          "model": "Claude Opus 5.5",
+          "mode": "text",
+          "anchor": "Opus 5.5\n",
+          "input": "Input\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok",
+          "output": "Output\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok"
+        },
+        {
+          "model": "Claude Sonnet 5.5",
+          "mode": "text",
+          "anchor": "Sonnet 5.5\n",
+          "input": "Input\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok",
+          "output": "Output\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok"
+        },
+        {
+          "model": "Claude Haiku 5.5",
+          "mode": "text",
+          "anchor": "Haiku 5.5\n",
+          "input": "Input\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok",
+          "output": "Output\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok"
+        },
+        {
+          "model": "Claude Fable 5.1",
+          "mode": "text",
+          "anchor": "Fable 5.1\n",
+          "input": "Input\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok",
+          "output": "Output\\n(?:Prompts[^\\n]*\\n)?\\$(?P<value>[\\d.]+) / MTok"
+        }
+      ]
+    },
+    {
+      "provider": "OpenAI",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "(?i)per 1M tokens",
+      "models": [
+        {
+          "model": "gpt-6-astra",
+          "mode": "html",
+          "after": "\"tier\":[0,\"standard\"]",
+          "anchor": "[0,\"gpt-6-astra\"]",
+          "row": "\\A\\[0,\"gpt-6-astra\"\\],\\[0,(?P<input>[\\d.]+)\\](?:,\\[0,[^\\]]*\\])*,\\[0,(?P<output>[\\d.]+)\\]\\]"
+        },
+        {
+          "model": "gpt-6.1-sol",
+          "mode": "html",
+          "after": "\"tier\":[0,\"standard\"]",
+          "anchor": "[0,\"gpt-6.1-sol\"]",
+          "row": "\\A\\[0,\"gpt-6\\.1-sol\"\\],\\[0,(?P<input>[\\d.]+)\\](?:,\\[0,[^\\]]*\\])*,\\[0,(?P<output>[\\d.]+)\\]\\]"
+        },
+        {
+          "model": "gpt-6-sol",
+          "mode": "html",
+          "after": "\"tier\":[0,\"standard\"]",
+          "anchor": "[0,\"gpt-6-sol\"]",
+          "row": "\\A\\[0,\"gpt-6-sol\"\\],\\[0,(?P<input>[\\d.]+)\\](?:,\\[0,[^\\]]*\\])*,\\[0,(?P<output>[\\d.]+)\\]\\]"
+        },
+        {
+          "model": "gpt-6-luna",
+          "mode": "html",
+          "after": "\"tier\":[0,\"standard\"]",
+          "anchor": "[0,\"gpt-6-luna\"]",
+          "row": "\\A\\[0,\"gpt-6-luna\"\\],\\[0,(?P<input>[\\d.]+)\\](?:,\\[0,[^\\]]*\\])*,\\[0,(?P<output>[\\d.]+)\\]\\]"
+        },
+        {
+          "model": "gpt-5.6-terra",
+          "mode": "html",
+          "after": "\"tier\":[0,\"standard\"]",
+          "anchor": "[0,\"gpt-5.6-terra\"]",
+          "row": "\\A\\[0,\"gpt-5\\.6-terra\"\\],\\[0,(?P<input>[\\d.]+)\\](?:,\\[0,[^\\]]*\\])*,\\[0,(?P<output>[\\d.]+)\\]\\]"
+        }
+      ]
+    },
+    {
+      "provider": "Google",
+      "url": "https://ai.google.dev/gemini-api/docs/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "per 1M tokens in USD",
+      "page_date": "Last updated (?P<date>\\d{4}-\\d{2}-\\d{2}) UTC",
+      "models": [
+        {
+          "model": "gemini-4-argon (Standard)",
+          "mode": "text",
+          "anchor": "gemini-4-argon\nTry it in Google AI Studio",
+          "input": "Input price[^$]*\\$(?P<value>[\\d.]+)",
+          "output": "Output price[^$]*\\$(?P<value>[\\d.]+)",
+          "step": {
+            "input": "Input price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})",
+            "output": "Output price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})"
+          }
+        },
+        {
+          "model": "gemini-3.8-flash",
+          "mode": "text",
+          "anchor": "gemini-3.8-flash\nTry it in Google AI Studio",
+          "input": "Input price[^$]*\\$(?P<value>[\\d.]+)",
+          "output": "Output price[^$]*\\$(?P<value>[\\d.]+)",
+          "step": {
+            "input": "Input price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})",
+            "output": "Output price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})"
+          }
+        },
+        {
+          "model": "gemini-3.1-pro-preview (prompts up to 200k)",
+          "mode": "text",
+          "anchor": "gemini-3.1-pro-preview and gemini-3.1-pro-preview-customtools\nTry it in Google AI Studio",
+          "input": "Input price[^$]*\\$(?P<value>[\\d.]+)",
+          "output": "Output price[^$]*\\$(?P<value>[\\d.]+)",
+          "step": {
+            "input": "Input price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})",
+            "output": "Output price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})"
+          }
+        },
+        {
+          "model": "gemini-2.5-flash-lite",
+          "mode": "text",
+          "anchor": "gemini-2.5-flash-lite\nTry it in Google AI Studio",
+          "input": "Input price[^$]*\\$(?P<value>[\\d.]+)",
+          "output": "Output price[^$]*\\$(?P<value>[\\d.]+)",
+          "step": {
+            "input": "Input price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})",
+            "output": "Output price[^$]*\\$[\\d.]+ through [A-Za-z]+ \\d+, \\d{4}\\.\\s*\\$(?P<value>[\\d.]+) starting (?P<date>[A-Za-z]+ \\d+, \\d{4})"
+          }
+        }
+      ]
+    },
+    {
+      "provider": "xAI",
+      "url": "https://docs.x.ai/docs/models",
+      "unit": "usd_per_1m_x10000",
+      "unit_check": "/ 1M tokens",
+      "page_date": "Last updated: (?P<date>[A-Za-z]+ \\d+, \\d{4})",
+      "models": [
+        {
+          "model": "grok-4.7",
+          "mode": "html",
+          "anchor": "{\"name\":\"grok-4.7\"",
+          "window": 1500,
+          "input": "\"promptTextTokenPrice\":\"(?P<value>\\d+)\"",
+          "output": "\"completionTextTokenPrice\":\"(?P<value>\\d+)\""
+        },
+        {
+          "model": "grok-4.3",
+          "mode": "html",
+          "anchor": "{\"name\":\"grok-4.3\"",
+          "window": 1500,
+          "input": "\"promptTextTokenPrice\":\"(?P<value>\\d+)\"",
+          "output": "\"completionTextTokenPrice\":\"(?P<value>\\d+)\""
+        },
+        {
+          "model": "grok-build-0.1",
+          "mode": "html",
+          "anchor": "{\"name\":\"grok-build-0.1\"",
+          "window": 1500,
+          "input": "\"promptTextTokenPrice\":\"(?P<value>\\d+)\"",
+          "output": "\"completionTextTokenPrice\":\"(?P<value>\\d+)\""
+        }
+      ]
+    },
+    {
+      "provider": "Mistral",
+      "url": "https://docs.mistral.ai/inference/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "/M Tokens",
+      "models": [
+        {
+          "model": "Mistral Large 3",
+          "mode": "text",
+          "anchor": "Mistral Large 3 ↗ |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "Mistral Medium 3.5",
+          "mode": "text",
+          "anchor": "Mistral Medium 3.5 ↗ |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "Mistral Small 4",
+          "mode": "text",
+          "anchor": "Mistral Small 4 ↗ |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        }
+      ]
+    },
+    {
+      "provider": "Together AI",
+      "url": "https://www.together.ai/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "Price per 1M tokens",
+      "models": [
+        {
+          "model": "gpt-oss-120B",
+          "mode": "text",
+          "anchor": "gpt-oss-120B |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)(?:\\s*\\$[\\d.]+ \\(cached\\))?\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "Qwen3.5 9B",
+          "mode": "text",
+          "anchor": "Qwen3.5 9B |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)(?:\\s*\\$[\\d.]+ \\(cached\\))?\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "DeepSeek V4 Pro 0813",
+          "mode": "text",
+          "anchor": "DeepSeek V4 Pro 0813 |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)(?:\\s*\\$[\\d.]+ \\(cached\\))?\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "Kimi K3",
+          "mode": "text",
+          "anchor": "Kimi K3 |",
+          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)(?:\\s*\\$[\\d.]+ \\(cached\\))?\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        }
+      ]
+    },
+    {
+      "provider": "DeepInfra",
+      "url": "https://deepinfra.com/ibm-granite/granite-4.2-8b",
+      "unit": "usd_per_1m",
+      "unit_check": "/ 1M tokens",
+      "models": [
+        {
+          "model": "ibm-granite/granite-4.2-8b",
+          "mode": "text",
+          "anchor": "ibm-granite/\ngranite-4.2-8b\n",
+          "row": "\\$(?P<input>[\\d.]+)\\s*in\\s*\\$(?P<output>[\\d.]+)\\s*out"
+        }
+      ]
+    },
+    {
+      "provider": "DeepInfra",
+      "url": "https://deepinfra.com/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "\\$ per 1M input tokens",
+      "models": [
+        {
+          "model": "Qwen3.5-9B",
+          "mode": "text",
+          "anchor": "Qwen3.5-9B |",
+          "row": "\\A[^|]*\\|[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "Llama-3.3-70B-Instruct-Turbo",
+          "mode": "text",
+          "anchor": "Llama-3.3-70B-Instruct-Turbo |",
+          "row": "\\A[^|]*\\|[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "claude-sonnet-5 (resold)",
+          "mode": "text",
+          "anchor": "claude-sonnet-5 |",
+          "row": "\\A[^|]*\\|[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+        }
+      ]
+    },
+    {
+      "provider": "Groq",
+      "url": "https://console.groq.com/docs/models",
+      "unit": "usd_per_1m",
+      "unit_check": "(?i)price per\\s*1M tokens",
+      "models": [
+        {
+          "model": "openai/gpt-oss-120b",
+          "mode": "text",
+          "anchor": "openai/gpt-oss-120b |",
+          "row": "\\$(?P<input>[\\d.]+) input\\s*\\$(?P<output>[\\d.]+) output"
+        },
+        {
+          "model": "openai/gpt-oss-20b",
+          "mode": "text",
+          "anchor": "openai/gpt-oss-20b |",
+          "row": "\\$(?P<input>[\\d.]+) input\\s*\\$(?P<output>[\\d.]+) output"
+        }
+      ]
+    },
+    {
+      "provider": "Fireworks",
+      "url": "https://docs.fireworks.ai/serverless/pricing",
+      "unit": "usd_per_1m",
+      "unit_check": "(?i)per 1 million tokens",
+      "models": [
+        {
+          "model": "Kimi K3 (Standard)",
+          "mode": "text",
+          "anchor": "| Kimi K3 | $",
+          "row": "\\A\\| [^|]*\\| \\$(?P<input>[\\d.]+) / \\$[\\d.]+ / \\$(?P<output>[\\d.]+)"
+        },
+        {
+          "model": "DeepSeek V4.1 Flash",
+          "mode": "text",
+          "anchor": "| DeepSeek V4.1 Flash | $",
+          "row": "\\A\\| [^|]*\\| \\$(?P<input>[\\d.]+) / \\$[\\d.]+ / \\$(?P<output>[\\d.]+)"
+        }
+      ]
+    }
+  ]
+}

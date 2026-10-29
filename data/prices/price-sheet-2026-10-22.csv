@@ -1,0 +1,6 @@
+read_date,provider,model,input_usd_per_1m,output_usd_per_1m,unit,source_url,page_date_if_shown,how_read,label
+2026-10-22,xAI,grok-4.7,2,6,USD per 1M tokens,https://docs.x.ai/docs/models,2026-09-21,Live page in Chromium,published by xAI
+2026-10-22,Anthropic,Claude Sonnet 5.5,2,10,USD per 1M tokens,https://claude.com/pricing,none,Raw page HTML,published by Anthropic
+2026-10-22,OpenAI,gpt-6.1-sol,2,10,USD per 1M tokens,https://developers.openai.com/api/docs/pricing,none,Live page in Chromium,published by OpenAI
+2026-10-22,Google,gemini-4-argon (Standard),2,10,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google
+2026-10-22,Google,gemini-4-argon (Standard) from 2026-12-01,4,20,USD per 1M tokens,https://ai.google.dev/gemini-api/docs/pricing,2026-10-19,Live page in Chromium,published by Google

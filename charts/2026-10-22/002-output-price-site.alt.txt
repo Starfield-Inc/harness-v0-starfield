@@ -1,0 +1,6 @@
+At $2 per million input tokens, output prices run from $6 to $10
+xAI grok-4.7: $6 (Output price, USD per 1M tokens), published by xAI.
+Anthropic Claude Sonnet 5.5: $10 (Output price, USD per 1M tokens), published by Anthropic.
+OpenAI gpt-6.1-sol: $10 (Output price, USD per 1M tokens), published by OpenAI.
+Google gemini-4-argon: $10 (Output price, USD per 1M tokens), published by Google.
+Prices read on 22 Oct 2026
