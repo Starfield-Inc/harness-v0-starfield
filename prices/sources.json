@@ -168,27 +168,39 @@
     },
     {
       "provider": "Mistral",
-      "url": "https://docs.mistral.ai/inference/pricing",
+      "url": "https://docs.mistral.ai/inference/pricing.md",
       "unit": "usd_per_1m",
       "unit_check": "/M Tokens",
       "models": [
         {
+          "model": "Mistral Small 4",
+          "mode": "markdown",
+          "anchor": "| [Mistral Small 4](",
+          "row": "\\A[^\\n]*?\\| Input \\$(?P<input>[\\d.]+) /M Tokens<br>(?:Cached input \\$[\\d.]+ /M Tokens<br>)?Output \\$(?P<output>[\\d.]+) /M Tokens \\|"
+        },
+        {
+          "model": "Mistral Large 4",
+          "mode": "markdown",
+          "anchor": "| [Mistral Large 4](",
+          "row": "\\A[^\\n]*?\\| Input \\$(?P<input>[\\d.]+) /M Tokens<br>(?:Cached input \\$[\\d.]+ /M Tokens<br>)?Output \\$(?P<output>[\\d.]+) /M Tokens \\|"
+        }
+      ],
+      "carried": [
+        {
           "model": "Mistral Large 3",
-          "mode": "text",
-          "anchor": "Mistral Large 3 ↗ |",
-          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+          "input": "0.5",
+          "output": "1.5",
+          "carried_from": "2026-10-30",
+          "source_url": "https://docs.mistral.ai/inference/pricing",
+          "reason": "Mistral took this model off its pricing page on 2 Nov 2026. The owner keeps it on the sheet with its last read price, labelled."
         },
         {
           "model": "Mistral Medium 3.5",
-          "mode": "text",
-          "anchor": "Mistral Medium 3.5 ↗ |",
-          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
-        },
-        {
-          "model": "Mistral Small 4",
-          "mode": "text",
-          "anchor": "Mistral Small 4 ↗ |",
-          "row": "\\A[^|]*\\|\\s*\\$(?P<input>[\\d.]+)\\s*\\|\\s*\\$[\\d.]+\\s*\\|\\s*\\$(?P<output>[\\d.]+)"
+          "input": "1.5",
+          "output": "7.5",
+          "carried_from": "2026-10-30",
+          "source_url": "https://docs.mistral.ai/inference/pricing",
+          "reason": "Mistral took this model off its pricing page on 2 Nov 2026. The owner keeps it on the sheet with its last read price, labelled."
         }
       ]
     },

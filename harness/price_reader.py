@@ -26,7 +26,9 @@ UNIT_FACTORS = {
     "usd_per_1k": Decimal(1000),
     "usd_per_1m_x10000": Decimal(1) / Decimal(10000),
 }
-HOW_READ = {"text": "Script: page text", "html": "Script: raw HTML"}
+HOW_READ = {"text": "Script: page text", "html": "Script: raw HTML", "markdown": "Script: page markdown"}
+CARRIED_HOW_READ = "Carried forward from the {date} read, no longer on the provider's page"
+CARRIED_FROM = re.compile(r"^Carried forward from the (\d{4}-\d{2}-\d{2}) read")
 USER_AGENT = ("StarfieldModelWatchPriceReader/0.1 "
               "(reads each public pricing page once a day; contact hello@starfield.net)")
 DEFAULT_WINDOW = 800
@@ -36,6 +38,12 @@ DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "prices"
 
 class PriceReadError(RuntimeError):
     pass
+
+
+def carried_from(how_read):
+    """The date of the earlier read a carried-forward row comes from, or None for a row read today."""
+    m = CARRIED_FROM.match(how_read or "")
+    return m.group(1) if m else None
 
 
 class _TextExtractor(HTMLParser):
@@ -188,7 +196,7 @@ def _read_page(page, raw, read_date):
     if page.get("page_date"):
         match = _search(page["page_date"], text, provider, "page date")
         page_date = _iso_date(_group(match, "date"), provider)
-    sources = {"text": text, "html": html.unescape(raw)}
+    sources = {"text": text, "html": html.unescape(raw), "markdown": raw}
     rows = []
     for model in page["models"]:
         mode = model.get("mode", "text")
@@ -201,7 +209,32 @@ def _read_page(page, raw, read_date):
                 "unit": UNIT_TEXT, "source_url": page["url"], "page_date_if_shown": page_date,
                 "how_read": HOW_READ[mode], "label": f"published by {provider}",
             })
+    rows += [_carried_row(page, entry, raw, read_date) for entry in page.get("carried", [])]
     return rows
+
+
+def _carried_row(page, entry, raw, read_date):
+    """A row the provider took off its page, kept with the price of its last read and labelled as such."""
+    provider = page["provider"]
+    who = f"{provider} / {entry.get('model')} (carried forward)"
+    for key in ("model", "input", "output", "carried_from", "reason", "source_url"):
+        if not entry.get(key):
+            raise PriceReadError(f"{who}: the carried entry in the config has no {key}")
+    if entry["model"] in raw:
+        raise PriceReadError(
+            f"{who}: the page {page['url']} lists this model again. Remove its 'carried' entry "
+            f"from the config and read it from the page, so an old price never replaces a real one")
+    when = _iso_date(entry["carried_from"], who)
+    price_in = _number(str(entry["input"]), who, "input price")
+    price_out = _number(str(entry["output"]), who, "output price")
+    _check_prices(price_in, price_out, who)
+    return {
+        "read_date": read_date, "provider": provider, "model": entry["model"],
+        "input_usd_per_1m": _plain(price_in), "output_usd_per_1m": _plain(price_out),
+        "unit": UNIT_TEXT, "source_url": entry["source_url"], "page_date_if_shown": "none",
+        "how_read": CARRIED_HOW_READ.format(date=when),
+        "label": f"published by {provider}, not on the page on {read_date}",
+    }
 
 
 def read_prices(config, fetch_page, now):

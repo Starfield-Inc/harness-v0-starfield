@@ -16,6 +16,9 @@ COLUMNS = [
     "source_url", "page_date_if_shown", "how_read", "label",
 ]
 URL = "https://example.test/prices"
+MISTRAL_MD = "https://docs.mistral.ai/inference/pricing.md"
+MISTRAL_HTML = "https://docs.mistral.ai/inference/pricing"
+CARRIED_HOW_READ = "Carried forward from the 2026-10-30 read, no longer on the provider's page"
 TABLE = r"\|\s*\$(?P<input>[\d.]+)\s*\|\s*\$[\d.]+\s*\|\s*\$(?P<output>[\d.]+)"
 STEP_VALUE = (r"\$[\d.]+ through [A-Za-z]+ \d+, \d{4}\.\s*"
               r"\$(?P<value>[\d.]+) starting (?P<date>[A-Za-z]+ \d+, \d{4})")
@@ -171,6 +174,80 @@ class ParseTests(unittest.TestCase):
         self.assertIn("Acme", str(ctx.exception))
 
 
+def mistral_config():
+    cfg = json.loads((ROOT / "prices" / "sources.json").read_text(encoding="utf-8"))
+    return {"pages": [p for p in cfg["pages"] if p["provider"] == "Mistral"]}
+
+
+def mistral_page():
+    return (FIX / "mistral_pricing_2026-11-02.md").read_text(encoding="utf-8")
+
+
+def read_mistral(cfg=None, md=None):
+    fetch = fetcher({MISTRAL_MD: md if md is not None else mistral_page()})
+    return pr.read_prices(cfg or mistral_config(), fetch, lambda: datetime(2026, 11, 2, 6, 0, tzinfo=timezone.utc))
+
+
+class MistralMarkdownTests(unittest.TestCase):
+    """The Mistral block of prices/sources.json against the page saved on 2 Nov 2026."""
+
+    def test_reads_small_4_and_large_4_from_the_markdown_page(self):
+        rows = {r["model"]: r for r in read_mistral()}
+        self.assertEqual((rows["Mistral Small 4"]["input_usd_per_1m"], rows["Mistral Small 4"]["output_usd_per_1m"]),
+                         ("0.15", "0.6"))
+        self.assertEqual((rows["Mistral Large 4"]["input_usd_per_1m"], rows["Mistral Large 4"]["output_usd_per_1m"]),
+                         ("0.7", "2.1"))
+        for name in ("Mistral Small 4", "Mistral Large 4"):
+            self.assertEqual(rows[name]["how_read"], "Script: page markdown")
+            self.assertEqual(rows[name]["source_url"], MISTRAL_MD)
+            self.assertEqual(rows[name]["label"], "published by Mistral")
+
+    def test_missing_anchor_stops_the_read(self):
+        md = mistral_page().replace("[Mistral Large 4]", "[Mistral Large 4.1]")
+        with self.assertRaises(pr.PriceReadError) as ctx:
+            read_mistral(md=md)
+        self.assertIn("Mistral Large 4", str(ctx.exception))
+        self.assertIn("not found", str(ctx.exception))
+
+    def test_unparsable_price_stops_the_read(self):
+        md = mistral_page().replace("Input $0.7 /M Tokens", "Input $ask /M Tokens")
+        with self.assertRaises(pr.PriceReadError) as ctx:
+            read_mistral(md=md)
+        self.assertIn("Mistral Large 4", str(ctx.exception))
+
+    def test_carried_rows_keep_the_last_read_price_and_say_so(self):
+        rows = {r["model"]: r for r in read_mistral()}
+        self.assertEqual((rows["Mistral Large 3"]["input_usd_per_1m"], rows["Mistral Large 3"]["output_usd_per_1m"]),
+                         ("0.5", "1.5"))
+        self.assertEqual((rows["Mistral Medium 3.5"]["input_usd_per_1m"],
+                          rows["Mistral Medium 3.5"]["output_usd_per_1m"]), ("1.5", "7.5"))
+        for name in ("Mistral Large 3", "Mistral Medium 3.5"):
+            row = rows[name]
+            self.assertEqual(list(row), COLUMNS)
+            self.assertEqual(row["how_read"], CARRIED_HOW_READ)
+            self.assertEqual(row["label"], "published by Mistral, not on the page on 2026-11-02")
+            self.assertEqual(row["page_date_if_shown"], "none")
+            self.assertEqual(row["source_url"], MISTRAL_HTML)
+            self.assertEqual(row["read_date"], "2026-11-02")
+            self.assertEqual(pr.carried_from(row["how_read"]), "2026-10-30")
+        self.assertIsNone(pr.carried_from(rows["Mistral Small 4"]["how_read"]))
+
+    def test_carried_model_back_on_the_page_stops_the_read(self):
+        md = mistral_page() + "| [Mistral Large 3](/models/x) | `x` | Input $0.5 /M Tokens<br>Output $1.5 /M Tokens |\n"
+        with self.assertRaises(pr.PriceReadError) as ctx:
+            read_mistral(md=md)
+        self.assertIn("Mistral Large 3", str(ctx.exception))
+        self.assertIn("Remove its 'carried' entry", str(ctx.exception))
+
+    def test_carried_entry_without_a_date_stops_the_read(self):
+        cfg = mistral_config()
+        del cfg["pages"][0]["carried"][0]["carried_from"]
+        with self.assertRaises(pr.PriceReadError) as ctx:
+            read_mistral(cfg)
+        self.assertIn("Mistral Large 3", str(ctx.exception))
+        self.assertIn("carried_from", str(ctx.exception))
+
+
 class WriteTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -247,8 +324,12 @@ class RepoConfigTests(unittest.TestCase):
             sheet = list(csv.DictReader(f))
         self.assertEqual(len(sheet), 31)
         want = [(r["provider"], r["model"], r["source_url"]) for r in sheet]
-        got = [(p["provider"], m["model"], p["url"])
-               for p in self.cfg["pages"] for m in p["models"]]
+        # On 2 Nov 2026 Mistral moved Small 4 to its markdown page, added Large 4 and dropped two models.
+        want = [(p, m, MISTRAL_MD if m == "Mistral Small 4" else u) for p, m, u in want]
+        want.append(("Mistral", "Mistral Large 4", MISTRAL_MD))
+        got = [(p["provider"], m["model"], p["url"]) for p in self.cfg["pages"] for m in p["models"]]
+        got += [(p["provider"], c["model"], c["source_url"])
+                for p in self.cfg["pages"] for c in p.get("carried", [])]
         self.assertEqual(sorted(got), sorted(want))
 
     def test_every_model_has_a_way_to_read_both_prices(self):
