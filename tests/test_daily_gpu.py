@@ -82,8 +82,9 @@ class FakeHost:
 
     def __init__(self, repo: Path, logs=None, remote_sha=None, idle="mem=0 load=0.3 servers=0",
                  tests_code=0, copy_files=True, runs=None, leftovers=(), fail=None, write_bundle=True,
-                 launched=None, now=LAUNCH_TIME):
+                 launched=None, now=LAUNCH_TIME, public=True):
         self.repo, self.calls = repo, []
+        self.public = public
         self.logs = list(logs if logs is not None else [good_log()])
         self.remote_sha = remote_sha
         self.idle, self.tests_code = idle, tests_code
@@ -111,9 +112,13 @@ class FakeHost:
                 return answer
         if argv[0] == "git" and "rev-parse" in argv:
             return 0, COMMIT + "\n"
-        if argv[0] == "git":
+        if argv[0] == "git" and "merge-base" in argv:
+            return (0, "") if self.public else (1, "")
+        if argv[0] == "git" and "bundle" in argv:
             if self.write_bundle:
                 Path(argv[-2]).write_bytes(BUNDLE_BYTES)
+            return 0, ""
+        if argv[0] == "git":
             return 0, ""
         if argv[0] == "rsync":
             if argv[-2].startswith("fake-alias:"):
@@ -243,6 +248,23 @@ class DailyGpuTest(unittest.TestCase):
         self.assertEqual(result.checks[-1].status, FAIL)
         self.assertEqual(host.ran("git fetch"), [])
         self.assertEqual(host.ran("nohup"), [])
+
+    def test_commit_not_on_origin_main_runs_nothing(self):
+        for name, kwargs in (("not an ancestor", dict(public=False)),
+                             ("fetch fails", dict(fail={"fetch origin": (128, "could not read from remote")}))):
+            with self.subTest(name):
+                self.record.unlink(missing_ok=True)
+                host, result = self.go(FakeHost(self.repo, **kwargs))
+                self.assertEqual([(c.name, c.status) for c in result.checks], [("harness commit is public", FAIL)])
+                self.assertEqual([c[0] for c in host.calls], ["git"] * len(host.calls))
+                self.assertEqual(host.ran("bundle create"), [])
+
+    def test_public_check_fetches_first_and_tests_the_bundled_commit(self):
+        host, _ = self.go()
+        fetch, check, bundle = (host.calls.index(host.ran(t)[0]) for t in ("fetch origin", "merge-base", "bundle create"))
+        self.assertLess(fetch, check)
+        self.assertLess(check, bundle)
+        self.assertEqual(host.ran("merge-base")[0][-3:], ["--is-ancestor", COMMIT, "origin/main"])
 
     def test_remote_tests_failure(self):
         host, result = self.go(FakeHost(self.repo, tests_code=1))

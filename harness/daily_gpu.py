@@ -188,11 +188,21 @@ def commit_argv(repo: Path) -> list[str]:
     return ["git", "-C", str(repo), "rev-parse", "main"]
 
 
+def fetch_argv(repo: Path) -> list[str]:
+    return ["git", "-C", str(repo), "fetch", "origin"]
+
+
+def public_argv(repo: Path, commit: str) -> list[str]:
+    return ["git", "-C", str(repo), "merge-base", "--is-ancestor", commit, "origin/main"]
+
+
 def build_steps(host: Host, stamp: str, repo: Path, bundle: Path, commit: str, script: str) -> list[tuple[str, list[str]]]:
     p, q = host.paths(stamp), shlex.quote
     rp = str(p["repo"])
     return [
+        ("fetch", fetch_argv(repo)),
         ("commit", commit_argv(repo)),
+        ("public", public_argv(repo, commit)),
         ("bundle", ["git", "-C", str(repo), "bundle", "create", str(bundle), "main"]),
         ("remote folders", _remote(host, f"mkdir -p {q(str(p['out']))} {q(rp)}")),
         ("copy bundle", _rsync(str(bundle), f"{host.alias}:{p['bundle']}")),
@@ -340,7 +350,13 @@ def _launch(runner, host, models, repo, stamp, checks) -> None:
     script = render_script(host, models, stamp)
     with tempfile.TemporaryDirectory() as tmp:
         bundle = Path(tmp) / "harness.bundle"
+        _call(runner, "harness commit is public", fetch_argv(repo))
         commit = _call(runner, "commit", commit_argv(repo)).strip()
+        # run records name this commit, and the published repo is built from origin/main
+        try:
+            _call(runner, "harness commit is public", public_argv(repo, commit))
+        except StepFailed:
+            raise StepFailed("harness commit is public", f"{commit[:12]} is not on origin/main, push it first")
         steps = dict(build_steps(host, stamp, repo, bundle, commit, script))
         _call(runner, "bundle", steps["bundle"])
         try:
