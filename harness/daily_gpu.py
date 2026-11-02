@@ -192,7 +192,8 @@ def _rsync(*args) -> list[str]:
 
 def _pull_rsync(*args) -> list[str]:
     # the host is not trusted: a link copied back could point at any local file
-    return _rsync("--no-links", "--no-devices", "--no-specials", f"--max-size={MAX_RUN_FILE_BYTES // 2**20}M", *args)
+    # hidden files are never run files: they are rsync temp files or .DS_Store
+    return _rsync("--no-links", "--no-devices", "--no-specials", "--exclude=.*", f"--max-size={MAX_RUN_FILE_BYTES // 2**20}M", *args)
 
 
 def commit_argv(repo: Path) -> list[str]:
@@ -404,11 +405,19 @@ def _collect(runner, host, models, repo, stamp, checks, text, staging) -> list[P
     """Copies back the out folder of a job whose log `text` has ended.
 
     The copy goes to a staging folder that holds only this launch's files, so a copy back
-    repeated after a partial one still finds every file of the launch. Returns the run files."""
+    repeated after a partial one still finds every file of the launch. It is emptied before each pull. Returns the run files."""
     checks += _log_checks(text, models)
     if any(m.startswith("STOP") for m in _log_markers(text)):
         raise StepFailed("remote run", "the run script stopped, see the guard and exit checks")
-    staging.mkdir(parents=True, exist_ok=True)
+    # a temp file of an interrupted rsync or a .DS_Store must not fail every later copy back
+    try:
+        if staging.is_symlink():
+            staging.unlink()
+        elif staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+    except OSError as e:
+        raise StepFailed("copy back", f"cannot empty the staging folder: {e}")
     _call(runner, "copy back", pull_argv(host, stamp, staging))
     files = _check_staging(staging)
     results = repo / "results"

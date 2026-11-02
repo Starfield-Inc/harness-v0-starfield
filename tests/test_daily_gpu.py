@@ -223,7 +223,7 @@ class DailyGpuTest(unittest.TestCase):
                 self.assertIn("ssh -o ConnectTimeout=15", " ".join(call))
         pull = host.ran("rsync")[-1]
         self.assertEqual(pull[-2], f"fake-alias:{host.out_dir}/")
-        self.assertFalse([a for a in pull if a.startswith(("--include", "--exclude"))])
+        self.assertEqual([a for a in pull if a.startswith(("--include", "--exclude"))], ["--exclude=.*"])
         start = host.ran("nohup")[0][-1]
         self.assertIn("setsid", start)
         self.assertIn(COMMIT, host.ran("git fetch")[0][-1])
@@ -284,6 +284,29 @@ class DailyGpuTest(unittest.TestCase):
                 self.assertEqual(list((self.repo / "results").iterdir()), [])
                 self.assertEqual(len(host.idle_checks()), 1)
                 self.assertNotIn("PRIVATE KEY", result_text(result))
+
+    def test_leftover_hidden_files_in_staging_do_not_fail_the_copy_back(self):
+        staging = self.record.parent / STAMP
+        staging.mkdir(parents=True)
+        (staging / ".vllm-x.csv.AbC123").write_text("partial")
+        (staging / ".DS_Store").write_text("x")
+        (staging / "notes.txt").write_text("x")
+        _, result = self.go()
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+        self.assertEqual(len(result.run_csvs), 2)
+
+    def test_copy_back_rsync_skips_hidden_files(self):
+        src, dst = self.repo.parent / "src", self.repo.parent / "dst"
+        src.mkdir()
+        dst.mkdir()
+        (src / ".vllm-x.csv.AbC123").write_text("partial")
+        (src / "vllm-a.csv").write_text("a,b\n1,2\n")
+        cmd = daily_gpu.pull_argv(daily_gpu.read_host(ENV)[0], STAMP, dst)
+        done = subprocess.run(["rsync", "-a", "--exclude=.*", f"{src}/", f"{dst}/"], capture_output=True)
+        if done.returncode != 0:
+            self.skipTest("rsync not available")
+        self.assertEqual(sorted(p.name for p in dst.iterdir()), ["vllm-a.csv"])
+        self.assertIn("--exclude=.*", cmd)
 
     def test_failed_guard_stops_and_fails(self):
         log = ("2026-11-02T10:00:00Z start\n2026-11-02T10:00:01Z model Org/Model-1: guard\n"
