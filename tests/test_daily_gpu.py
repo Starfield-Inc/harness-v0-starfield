@@ -68,6 +68,7 @@ def write_run(results: Path, model, index, ymd=YMD):
 
 
 SHARED_OUT = ENV["HARNESS_GPU_WORKDIR"] + "/out"
+LAUNCH_OUT = ENV["HARNESS_GPU_WORKDIR"] + f"/runs/{STAMP}/out"
 LAUNCH_TIME = 1793613600.0  # 2026-11-02T10:00:00Z
 
 
@@ -75,10 +76,13 @@ class FakeHost:
     """Plays the runner: answers each argv from a script and records it.
 
     `remote` maps a remote folder to the runs (model, index, ymd) it holds. Starting the job puts
-    `runs` in the folder the script writes to; a copy back writes the runs of its source folder."""
+    `runs` in the folder the script writes to; a copy back writes the runs of its source folder.
+    `launched` plays a launch of STAMP made by an earlier run: "yes" still running, "no" ended,
+    None when its folder is gone."""
 
     def __init__(self, repo: Path, logs=None, remote_sha=None, idle="mem=0 load=0.3 servers=0",
-                 tests_code=0, copy_files=True, runs=None, leftovers=(), fail=None, write_bundle=True):
+                 tests_code=0, copy_files=True, runs=None, leftovers=(), fail=None, write_bundle=True,
+                 launched=None, now=LAUNCH_TIME):
         self.repo, self.calls = repo, []
         self.logs = list(logs if logs is not None else [good_log()])
         self.remote_sha = remote_sha
@@ -89,7 +93,10 @@ class FakeHost:
         self.out_dir = None
         self.fail = fail or {}
         self.write_bundle = write_bundle
-        self.now = LAUNCH_TIME
+        self.now = now
+        self.launched = launched
+        if launched:
+            self.remote[LAUNCH_OUT] = list(self.runs)
 
     def clock(self):
         return self.now
@@ -121,6 +128,8 @@ class FakeHost:
         if "printf" in command:
             self.out_dir = re.search(r"--out-dir (\S+)", command).group(1)
             return 0, ""
+        if command.startswith('export PATH=/srv/fake/venv/bin:"$PATH"; if [ ! -e '):
+            return 0, f"launch={self.launched}\n{self.logs[0]}" if self.launched else "launch=gone\n"
         if "nohup" in command:
             self.remote.setdefault(self.out_dir, []).extend(self.runs)
             return 0, ""
@@ -134,7 +143,7 @@ class FakeHost:
         return [c for c in self.calls if text in " ".join(c)]
 
     def stops(self):
-        return [c for c in self.calls if c[0] == "ssh" and "kill" in c[-1] and "printf" not in c[-1]]
+        return [c for c in self.calls if c[0] == "ssh" and "kill -s TERM" in c[-1] and "printf" not in c[-1]]
 
     def idle_checks(self):
         return self.ran('echo "mem=')
@@ -148,8 +157,9 @@ class DailyGpuTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.repo = Path(tmp.name)
-        (self.repo / "config").mkdir()
+        self.repo = Path(tmp.name) / "repo"
+        self.record = Path(tmp.name) / "daily-state" / f"launch-{YMD}.json"
+        (self.repo / "config").mkdir(parents=True)
         (self.repo / "config" / "models.json").write_text(
             json.dumps({"core": MODELS[:1], "rotating": MODELS[1:]}), encoding="utf-8")
         (self.repo / "prompts").mkdir()
@@ -330,6 +340,93 @@ class DailyGpuTest(unittest.TestCase):
         self.assertEqual(result.summary, summary)
         self.assertTrue(summary.exists())
 
+    def test_rerun_after_failed_copy_back_copies_without_a_second_launch(self):
+        _, first = self.go(FakeHost(self.repo, fail={"/out/ ": (23, "partial transfer")}))
+        self.assertEqual([c.status for c in self.status(first, "copy back")], [FAIL])
+        host, result = self.go(FakeHost(self.repo, launched="no"))
+        self.assertEqual(host.ran("nohup"), [])
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+        self.assertEqual(len(result.run_csvs), 2)
+        self.assertTrue(result.summary.exists())
+        self.assertEqual(json.loads(self.record.read_text())["done"], [p.name for p in result.run_csvs])
+
+    def test_rerun_after_poll_failures_resumes_polling(self):
+        self.go(FakeHost(self.repo, fail={"; cat ": (255, "connection timed out")}))
+        later = LAUNCH_TIME + 10 * 60
+        host, result = self.go(FakeHost(self.repo, launched="yes", now=later,
+                                        logs=["2026-11-02T10:00:00Z start\n", good_log()]))
+        self.assertEqual(host.ran("nohup"), [])
+        self.assertEqual(len(host.ran("; cat ")), 3)
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+        self.assertEqual(len(result.run_csvs), 2)
+
+    def test_resumed_wait_keeps_the_time_limit_of_the_first_start(self):
+        self.go(FakeHost(self.repo, fail={"; cat ": (255, "connection timed out")}))
+        later = LAUNCH_TIME + 88 * 60
+        host, result = self.go(FakeHost(self.repo, launched="yes", now=later,
+                                        logs=["2026-11-02T10:00:00Z start\n"]))
+        self.assertEqual(host.ran("nohup"), [])
+        self.assertEqual([c.status for c in self.status(result, "remote run")], [FAIL])
+        self.assertLessEqual(host.now - later, 3 * daily_gpu.POLL_SECONDS)
+        self.assertEqual(len(host.stops()), 1)
+
+    def test_failed_launch_is_not_started_again_the_same_day(self):
+        stop_log = "2026-11-02T10:00:00Z start\n2026-11-02T10:00:02Z STOP guard: load 7.5 is 6 or more\n"
+        for name, log in (("stopped", stop_log), ("died", "2026-11-02T10:00:00Z start\n")):
+            with self.subTest(name):
+                self.record.unlink(missing_ok=True)
+                self.go(FakeHost(self.repo, logs=[stop_log]))
+                host, result = self.go(FakeHost(self.repo, launched="no", logs=[log]))
+                self.assertEqual(host.ran("nohup"), [])
+                check = self.status(result, "earlier launch")
+                self.assertEqual([c.status for c in check], [FAIL])
+                self.assertIn("already attempted", check[0].detail)
+                self.assertIn(self.record.name, check[0].detail)
+                self.assertTrue(self.record.exists())
+                for secret in ("fake-alias", "/srv/fake"):
+                    self.assertNotIn(secret, result_text(result))
+
+    def test_gone_launch_folder_counts_as_not_launched(self):
+        self.go(FakeHost(self.repo, fail={"/out/ ": (23, "partial transfer")}))
+        host, result = self.go(FakeHost(self.repo, launched=None))
+        self.assertEqual(len(host.ran("nohup")), 1)
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+
+    def test_launch_record_is_outside_the_repo_and_has_no_host_details(self):
+        self.go(FakeHost(self.repo, fail={"/out/ ": (23, "partial transfer")}))
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record["stamp"], STAMP)
+        self.assertEqual(record["day"], DAY.isoformat())
+        self.assertEqual(record["models"], [m["id"] for m in MODELS])
+        self.assertEqual(record["started"], LAUNCH_TIME)
+        self.assertEqual(record["done"], [])
+        for secret in ("fake-alias", "/srv/fake"):
+            self.assertNotIn(secret, self.record.read_text())
+        self.assertFalse(list(self.repo.rglob("launch-*")))
+
+    def test_broken_launch_record_fails_and_runs_nothing(self):
+        self.record.parent.mkdir()
+        for text in ("{not json", json.dumps({"stamp": "x; touch y", "started": 0, "done": []})):
+            with self.subTest(text):
+                self.record.write_text(text, encoding="utf-8")
+                host, result = self.go()
+                self.assertEqual(host.calls, [])
+                self.assertEqual([(c.name, c.status) for c in result.checks], [("launch record", FAIL)])
+
+    def test_state_dir_comes_from_env(self):
+        state = self.repo.parent / "elsewhere"
+        self.go(env={**ENV, "HARNESS_STATE_DIR": str(state)})
+        self.assertTrue((state / self.record.name).exists())
+        self.assertFalse(self.record.exists())
+
+    def test_rerun_after_a_midnight_crossing_is_done(self):
+        runs = [(m, i, "20261103") for i, m in enumerate(MODELS, 1)]
+        self.go(FakeHost(self.repo, runs=runs))
+        host, result = self.go()
+        self.assertEqual(host.calls, [])
+        self.assertEqual([c.status for c in self.status(result, "gpu runs")], [PASS])
+        self.assertEqual(len(result.run_csvs), 2)
+
     def test_partial_earlier_run_does_not_count_as_done(self):
         write_run(self.repo / "results", MODELS[0], 7)
         host, _ = self.go()
@@ -361,6 +458,7 @@ class DailyGpuTest(unittest.TestCase):
         }
         for name, kwargs in cases.items():
             with self.subTest(name):
+                self.record.unlink(missing_ok=True)
                 host, result = self.go(FakeHost(self.repo, **kwargs))
                 self.assertTrue(any(c.status == FAIL for c in result.checks))
                 self.assertEqual(len(host.stops()), 1)
