@@ -400,7 +400,7 @@ def _launch(runner, host, models, repo, stamp, checks) -> None:
 
 
 def _collect(runner, host, models, repo, stamp, checks, text, staging) -> list[Path]:
-    """Copies the out folder of a job whose log `text` has ended back.
+    """Copies back the out folder of a job whose log `text` has ended.
 
     The copy goes to a staging folder that holds only this launch's files, so a copy back
     repeated after a partial one still finds every file of the launch. Returns the run files."""
