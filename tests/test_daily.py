@@ -3,6 +3,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -41,7 +42,6 @@ class Case(unittest.TestCase):
         self.root = root
         self.runs = []
         self.ssh_g = None
-        self.on_ps = None
         today = mock.patch.object(daily, "utc_today", return_value=DAY)
         today.start()
         self.addCleanup(today.stop)
@@ -74,8 +74,6 @@ class Case(unittest.TestCase):
         """Records every command. ps runs for real so the lock can read process start times."""
         self.runs.append(list(argv))
         if argv[0] == "ps":
-            if self.on_ps:
-                self.on_ps(argv)
             return subprocess.run(argv, capture_output=True, text=True)
         if argv[:2] == ["ssh", "-G"]:
             if self.ssh_g is None:
@@ -215,15 +213,29 @@ class TestRun(Case):
             return GpuResult(day, [], None, [Check("gpu runs", FAIL, "benchacct on port 2201 refused")])
         code, out = self.main(gpu=gpu)
         self.assertIn(["ssh", "-G", "gpubox"], self.runs)
-        self.assertEqual(seen["terms"], ["existing-term", "benchacct", "gpu-7.cluster.example.org", "2201",
-                                         "~/.ssh/bench_key"])
+        self.assertEqual(seen["terms"], ["existing-term", "benchacct", "gpu-7.cluster.example.org", "bench_key",
+                                         "gpubox"])
         self.assertEqual(self.published_with[2]["HARNESS_PRIVATE_TERMS"].split(",")[1], "benchacct")
         self.assertNotIn("benchacct", out)
-        self.assertNotIn("2201", out)
 
-    def test_parse_ssh_config_skips_the_default_port(self):
-        self.assertEqual(daily.ssh_terms("user u1x\nport 22\nhostname h.example.com\nidentityfile ~/.ssh/id_rsa\n"),
-                         ["u1x", "h.example.com", "~/.ssh/id_rsa"])
+    def test_ports_and_default_users_are_not_terms(self):
+        config = ("user root\nhostname gpu-01.lan\nport 2222\nidentityfile ~/.ssh/id_ed25519\n"
+                  "identityfile ~/.ssh/bench_key\n")
+        self.assertEqual(daily.ssh_terms(config), ["gpu-01.lan", "id_ed25519", "bench_key"])
+        for user in ("root", "ubuntu", "admin", "user", "abc"):
+            self.assertEqual(daily.ssh_terms(f"user {user}\n"), [])
+        self.assertEqual(daily.ssh_terms("user benchacct\nport 22\n"), ["benchacct"])
+
+    def test_a_port_term_does_not_break_a_commit_link(self):
+        self.environ["HARNESS_GPU_SSH"] = "gpu"
+        self.ssh_g = "user root\nhostname gpu-01.lan\nport 2222\n"
+        link = "https://github.com/o/r/commit/9f2222ab"
+        code, out = self.main(gpu=lambda day, repo, env: GpuResult(
+            day, [], None, [Check("runs", FAIL, f"see {link}, root login to gpu-01.lan failed")]))
+        self.assertIn(link, out)
+        self.assertIn("root login", out)
+        self.assertNotIn("gpu-01", out)
+        self.assertNotIn("<redacted>-01", out)
 
     def test_ssh_config_failure_does_not_stop_the_run(self):
         self.environ["HARNESS_GPU_SSH"] = "gpubox"
@@ -266,9 +278,12 @@ class TestLock(Case):
         self.assertEqual(code, 0)
         self.assertEqual(self.calls.count("publish"), 1)
 
-    def test_lock_is_released(self):
+    def test_lock_is_free_after_the_run(self):
         self.main()
-        self.assertEqual(list(self.lockdir.iterdir()), [])
+        lock = daily.Lock(self.repo, self.environ).path
+        # The file stays (deleting it would let two runs lock two different files); only its text goes.
+        self.assertEqual(lock.read_text(), "")
+        self.assertEqual(self.main()[0], 0)
 
     def old_lock(self, pid):
         lock = daily.Lock(self.repo, self.environ).path
@@ -276,45 +291,16 @@ class TestLock(Case):
         old = time.time() - 7 * 3600
         os.utime(lock, (old, old))
 
-    def test_old_lock_of_a_dead_process_is_taken(self):
-        done = subprocess.Popen(["true"])
-        done.wait()
-        self.old_lock(done.pid)
-        code, _ = self.main()
-        self.assertEqual(code, 0)
-
-    def test_old_lock_of_a_live_process_blocks(self):
-        self.old_lock(os.getpid())
-        code, out = self.main()
-        self.assertEqual(code, 1)
-        self.assertIn("another run holds", out)
-        self.assertEqual(self.calls, [])
-
-    def test_a_lock_another_run_now_owns_is_kept(self):
-        lock = daily.Lock(self.repo, self.environ).path
-        def takeover(day, repo, env):
-            lock.write_text("4000000\n")
-            return self.gpu(day, repo, env)
-        self.main(gpu=takeover)
-        self.assertEqual(lock.read_text(), "4000000\n")
-
-    def test_fresh_lock_blocks(self):
-        daily.Lock(self.repo, self.environ).path.write_text("1\n")
-        code, out = self.main()
-        self.assertEqual(code, 1)
-        self.assertEqual(self.calls, [])
-
-    def test_a_blocked_run_writes_the_report_and_notifies(self):
-        daily.Lock(self.repo, self.environ).path.write_text("1\n")
-        code, out = self.main()
-        self.assertEqual(code, 1)
-        self.assertIn("another run holds", self.report())
-        self.assertEqual(len(self.notifications()), 1)
-        self.assertNotIn(str(self.lockdir), out)
-        self.assertNotIn(str(self.lockdir), self.report())
-
     def start_time(self, pid):
         return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+
+    def test_lock_text_without_a_live_holder_does_not_block(self):
+        done = subprocess.Popen(["true"])
+        done.wait()
+        for text in (done.pid, f"{os.getpid()}\n{self.start_time(os.getpid())}", "1"):
+            with self.subTest(text=text):
+                self.old_lock(text)
+                self.assertEqual(self.main()[0], 0)
 
     def test_lock_records_pid_and_start_time(self):
         lock = daily.Lock(self.repo, self.environ).path
@@ -325,31 +311,47 @@ class TestLock(Case):
         self.main(gpu=gpu)
         self.assertEqual(seen["lock"], f"{os.getpid()}\n{self.start_time(os.getpid())}\n")
 
-    def test_old_lock_of_a_live_process_with_its_start_time_blocks(self):
-        self.old_lock(f"{os.getpid()}\n{self.start_time(os.getpid())}")
+    def hold_lock_in_another_process(self):
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; from pathlib import Path; from harness import daily\n"
+             "with daily.Lock(Path(sys.argv[1]), {'HARNESS_DAILY_LOCK_DIR': sys.argv[2]}):\n"
+             "    print('held', flush=True); sys.stdin.read()",
+             str(self.repo), str(self.lockdir)],
+            cwd=Path(__file__).resolve().parent.parent, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.stdin.close)
+        self.assertEqual(child.stdout.readline().strip(), "held")
+        return child
+
+    def test_a_blocked_run_writes_the_report_and_notifies(self):
+        child = self.hold_lock_in_another_process()
         code, out = self.main()
         self.assertEqual(code, 1)
         self.assertEqual(self.calls, [])
+        self.assertIn("another run holds", self.report())
+        self.assertIn(f"process {child.pid}", self.report())
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertNotIn(str(self.lockdir), out)
+        self.assertNotIn(str(self.lockdir), self.report())
 
-    def test_old_lock_of_a_reused_pid_is_taken(self):
-        self.old_lock(f"{os.getpid()}\nMon Jan  1 00:00:00 2001")
+    def test_a_live_holder_keeps_the_lock_whatever_its_text_says(self):
+        self.hold_lock_in_another_process()
+        done = subprocess.Popen(["true"])
+        done.wait()
+        # What a second run that raced on a stale lock would see: a dead owner and an old file.
+        self.old_lock(done.pid)
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertIn("another run holds", out)
+        self.assertEqual(self.calls, [])
+
+    def test_the_lock_of_a_killed_run_is_free_at_once(self):
+        child = self.hold_lock_in_another_process()
+        child.kill()
+        child.wait()
         code, _ = self.main()
         self.assertEqual(code, 0)
         self.assertEqual(self.calls, ["read", "gpu", "publish"])
-
-    def test_takeover_loses_to_a_run_that_took_the_lock_first(self):
-        lock = daily.Lock(self.repo, self.environ).path
-        self.old_lock(f"{os.getpid()}\nMon Jan  1 00:00:00 2001")
-        def other_run_takes_it(argv):
-            # The first ps call is the check of the stale owner; the other run takes the lock right then.
-            if not self.runs[:-1] or all(a[0] != "ps" for a in self.runs[:-1]):
-                lock.write_text("4000000\nTue Nov  3 06:00:00 2026\n")
-        self.on_ps = other_run_takes_it
-        code, out = self.main()
-        self.assertEqual(code, 1)
-        self.assertEqual(self.calls, [])
-        self.assertEqual(lock.read_text(), "4000000\nTue Nov  3 06:00:00 2026\n")
-        self.assertEqual(sorted(p.name for p in self.lockdir.iterdir()), [lock.name])
 
 
 class TestEnv(Case):
@@ -372,6 +374,38 @@ class TestEnv(Case):
         self.environ["HARNESS_DAILY_ENV"] = str(self.root / "nope.env")
         code, _ = self.main()
         self.assertEqual(code, 2)
+
+    def test_env_file_that_is_not_utf8_exits_2_with_a_scrubbed_message(self):
+        f = self.root / "daily.env"
+        f.write_bytes(b"TOKEN=\xff\xfe\n")
+        self.environ["HARNESS_DAILY_ENV"] = str(f)
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            code, _ = self.main()
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read the env file", err.getvalue())
+        self.assertNotIn(str(self.root), err.getvalue() + self.report())
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertEqual(len(self.notifications()), 1)
+
+
+class TestTopLevelErrors(Case):
+    def test_missing_lock_folder_is_made(self):
+        self.environ["HARNESS_DAILY_LOCK_DIR"] = str(self.root / "no" / "such" / "locks")
+        code, _ = self.main()
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "no" / "such" / "locks").is_dir())
+
+    def test_any_error_is_scrubbed_reported_and_exits_1(self):
+        boom = RuntimeError(f"broke in {self.root}/secret/place")
+        with mock.patch.object(daily, "run_day", side_effect=boom), mock.patch("sys.stderr", io.StringIO()) as err:
+            code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertIn("RuntimeError", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        for text in (err.getvalue(), out, self.report()):
+            self.assertNotIn(str(self.root), text)
+        self.assertIn("RuntimeError", self.report())
+        self.assertEqual(len(self.notifications()), 1)
 
 
 class TestDailyPrices(Case):

@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from harness.scrub import scrub
@@ -48,6 +49,44 @@ class ScrubTest(unittest.TestCase):
         out = scrub("fetch https://box.internal.corp.net:8000/v1 with key ~/.ssh/id_ed25519", {})
         self.assertNotIn("box.internal", out)
         self.assertNotIn("id_ed25519", out)
+
+    def test_a_term_inside_another_word_stays(self):
+        env = {"HARNESS_PRIVATE_TERMS": "2222,v100"}
+        text = "see https://github.com/o/r/commit/9f2222ab and V100s"
+        self.assertEqual(scrub(text, env), text)
+
+    def test_a_term_in_a_host_or_path_takes_the_whole_token(self):
+        out = scrub("connect to gpu-01.lan, then gpu_box/run7 failed; gpus are fine", {"HARNESS_PRIVATE_TERMS": "gpu"})
+        self.assertEqual(out, "connect to <redacted>, then <redacted> failed; gpus are fine")
+
+    def test_credentials_in_links_to_safe_hosts_are_removed(self):
+        out = scrub("push to https://x-access-token:ghp_SECRET@github.com/o/r.git and https://user:pw@starfield.net/x", {})
+        self.assertNotIn("SECRET", out)
+        self.assertNotIn("user:pw", out)
+        self.assertIn("https://github.com/o/r.git", out)
+        self.assertIn("https://starfield.net/x", out)
+
+    def test_user_at_host_is_removed_but_a_safe_email_stays(self):
+        out = scrub("ssh root@node7.lan failed; mail 344872025+esteban657@users.noreply.github.com", {})
+        self.assertNotIn("root@", out)
+        self.assertNotIn("node7", out)
+        self.assertIn("344872025+esteban657@users.noreply.github.com", out)
+
+    def test_secret_tokens_are_removed_anywhere(self):
+        text = ("token ghp_abcdefghijklmnop1234 and github_pat_11ABCDEF_xyz and sk-proj-abcdefghijklmnop "
+                "and xoxb-1234-abcd and AKIAABCDEFGHIJKLMNOP\n"
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\ndone")
+        out = scrub(text, {})
+        for bad in ("ghp_", "github_pat_", "sk-proj", "xoxb-", "AKIA", "b3BlbnNzaC1rZXk", "PRIVATE KEY"):
+            self.assertNotIn(bad, out)
+        self.assertTrue(out.startswith("token <redacted>"))
+        self.assertTrue(out.endswith("done"))
+
+    def test_a_long_token_is_scrubbed_in_linear_time(self):
+        start = time.monotonic()
+        out = scrub("a" * 50000 + " gpu-01.lan " + "b" * 50000, {"HARNESS_PRIVATE_TERMS": "gpu"})
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertIn(" <redacted> ", out)
 
 
 if __name__ == "__main__":

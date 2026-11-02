@@ -22,7 +22,7 @@ from typing import NamedTuple
 from harness.checks import FAIL, FLAG, PASS, Check, is_draft, render_markdown
 from harness.checks.runs import PRIVACY_PATTERNS
 from harness.daily_types import GpuResult, PriceResult, PublishResult, is_dry_run
-from harness.scrub import scrub
+from harness.scrub import private_hits, scrub
 from harness.price_table import (DEFAULT_MAIN_MODELS, build_table, change_text, load_main_models,
                                  read_sheet, split_steps, step_note)
 
@@ -283,11 +283,13 @@ def _private_labels(text):
     return [label for label, pat in PRIVACY_PATTERNS.items() if re.search(pat, text, re.IGNORECASE)]
 
 
-def scan_added_lines(diff_text):
+def scan_added_lines(diff_text, env):
+    """Kinds of private text in the added lines: the privacy patterns, the private terms as whole tokens,
+    and the scrub's host name and local path rules. The labels never quote the text itself."""
     hits = []
     for line in diff_text.splitlines():
         if line.startswith("+") and not line.startswith("+++"):
-            hits += _private_labels(line[1:])
+            hits += _private_labels(line[1:]) + private_hits(line[1:], env)
     return sorted(set(hits))
 
 
@@ -366,9 +368,19 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
 # Steps
 # ---------------------------------------------------------------------------------------------
 
-def _existing_pr(gh_list_stdout):
-    prs = json.loads(gh_list_stdout or "[]")
-    return prs[0] if prs else None
+PR_FIELDS = "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName"
+
+
+def _existing_pr(gh_list_stdout, branch):
+    """The job's own pull request for the branch, and the URLs of others with the same branch name.
+    A fork can open a pull request from a branch of the same name, so only one from this repository counts."""
+    own, others = None, []
+    for pr in json.loads(gh_list_stdout or "[]"):
+        if pr.get("isCrossRepository") is False and pr.get("headRefName") == branch and own is None:
+            own = pr
+        else:
+            others.append(pr.get("url", ""))
+    return own, others
 
 
 def _branch_data(branch, repo, ctx):
@@ -400,13 +412,14 @@ def _data_status(sha, pushed):
             "public repository. The pull request must stay a draft.")
 
 
-def _found_pr(pr, branch, repo, ctx):
+def _found_pr(pr, branch, repo, ctx, ignored):
     sha, pushed, _ = _branch_data(branch, repo, ctx)
     draft = bool(pr.get("isDraft")) or pushed is not True
-    if pushed is False and not pr.get("isDraft"):
+    if pushed is not True and not pr.get("isDraft"):
         _sh(ctx.runner, ["gh", "pr", "ready", pr["url"], "--undo", *ctx.repo_args], cwd=ctx.workdir, env=ctx.gh_env,
             check=False)
-    text = scrub(f"Found the existing pull request {pr['url']}. {_data_status(sha, pushed)}\n", ctx.env)
+    text = scrub(" ".join([*ignored, f"Found the existing pull request {pr['url']}.", _data_status(sha, pushed)]) + "\n",
+                 ctx.env)
     return PublishResult(sha if pushed else "", [pr["url"]], draft, text)
 
 
@@ -562,7 +575,8 @@ def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site)
     body, checks = _safe_body(summary, sha, harness_url, checks, pushed, ctx.env)
     body_file = ctx.workdir / f"{branch}.pr-body.md"
     body_file.write_text(body, encoding="utf-8")
-    title = scrub(f"Daily data: prices and V100 runs, {fmt_day(day)}", ctx.env)
+    # Fixed text and a date: there is nothing to scrub, and an alias such as v100 would break it.
+    title = f"Daily data: prices and V100 runs, {fmt_day(day)}"
     res = _sh(ctx.runner, ["gh", "pr", "create", *ctx.repo_args, "--base", "main", "--head", branch,
                               "--title", title, "--body-file", str(body_file), *(["--draft"] if is_draft(checks) else [])],
               cwd=ctx.workdir, env=ctx.gh_env, check=False)
@@ -605,13 +619,15 @@ def _publish(day, repo, price_result, gpu_result, env, runner, progress):
     header = [f"Daily data for {fmt_day(day)}."]
 
     found = _sh(runner, ["gh", "pr", "list", *ctx.repo_args, "--head", branch, "--state", "all",
-                         "--json", "url,isDraft,body", "--limit", "5"], cwd=workdir, env=ctx.gh_env, check=False)
+                         "--json", PR_FIELDS, "--limit", "5"], cwd=workdir, env=ctx.gh_env, check=False)
     if found.returncode != 0:
         failed = Check("pull request lookup", FAIL, f"`gh pr list` failed: {_tail(found.stderr or found.stdout)}")
         return _report_locally(day, header, [*inputs, failed], env, runner)
-    existing = _existing_pr(found.stdout)
+    existing, others = _existing_pr(found.stdout, branch)
+    ignored = [f"Ignored the pull request {u} from another repository, which has the same branch name." for u in others]
+    header += ignored
     if existing:
-        return _found_pr(existing, branch, repo, ctx)
+        return _found_pr(existing, branch, repo, ctx, ignored)
     if _sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip():
         sha, pushed, harness_url = _branch_data(branch, repo, ctx)
         retry = Check("site checks", FAIL, f"not run again: the pull request is opened from the {branch} branch an earlier run pushed")
@@ -695,9 +711,15 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
     diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json"], cwd=clone).stdout
-    hits = scan_added_lines(diff)
+    hits = scan_added_lines(diff, ctx.env)
     own.append(Check("no host details in site files", FAIL if hits else PASS,
                      f"private text matched: {', '.join(hits)}" if hits else "added lines scanned, no private text"))
+    if hits:
+        # The site branch would carry the private text to the site repository, even as a draft.
+        shutil.rmtree(clone, ignore_errors=True)
+        summary = [*header, "The site files held private text, so the site branch was not pushed and no pull request "
+                            "was opened. The job's clone of the site repository was deleted."]
+        return _report_locally(day, summary, [*inputs, *own, *flags_extra], ctx.env, runner, "" if committed else sha)
 
     pushed, local_note = False, []
     if not committed:
@@ -709,7 +731,8 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     if pushed:
         progress.pushed_sha = sha
         own.append(_public_check(runner, _github_slug(repo_url) or "", sha))
-        local_note = [_update_local_main(repo, data_paths, workdir, runner)]
+        if committed or not is_draft([*inputs, *own]):
+            local_note = [_update_local_main(repo, data_paths, workdir, runner)]
 
     checks = [*inputs, *own, *flags_extra]
     summary = [*header,

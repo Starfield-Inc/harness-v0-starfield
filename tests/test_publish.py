@@ -146,6 +146,13 @@ def temp_refs(repo):
 
 
 DATA_PUSH = ["git", "push", "origin", "daily-data-2026-10-30:main"]
+PR_URL = "https://github.com/Starfield-Inc/starfield-website/pull/99"
+
+
+def own_pr(url, draft, fork=False):
+    """One entry of `gh pr list --json`, as gh prints it."""
+    return {"number": int(url.rsplit("/", 1)[1]), "url": url, "isDraft": draft, "isCrossRepository": fork,
+            "headRepositoryOwner": {"login": "someone" if fork else "Starfield-Inc"}, "headRefName": "daily-2026-10-30"}
 
 
 class PageTests(unittest.TestCase):
@@ -193,9 +200,9 @@ class PageTests(unittest.TestCase):
         self.assertTrue(compare_page_to_sheet(text.replace("The price in the table is the price until 2026-12-01.", ""), s.sheet, s.prev_sheet))
 
     def test_privacy_scan_ignores_github_links_and_catches_paths(self):
-        self.assertEqual(scan_added_lines("+see https://github.com/Starfield-Inc/h/blob/main/data/prices/a.csv"), [])
-        self.assertEqual(scan_added_lines("+++ b/x\n+file at /Users/someone/x"), ["/Users/"])
-        self.assertEqual(scan_added_lines(" /Users/context line not added"), [])
+        self.assertEqual(scan_added_lines("+see https://github.com/Starfield-Inc/h/blob/main/data/prices/a.csv", {}), [])
+        self.assertEqual(scan_added_lines("+++ b/x\n+file at /Users/someone/x", {}), ["/Users/", "local path"])
+        self.assertEqual(scan_added_lines(" /Users/context line not added", {}), [])
 
 
 class BodyTests(unittest.TestCase):
@@ -487,6 +494,12 @@ class PublishTests(unittest.TestCase):
         create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
         self.assertIn("--draft", create)
 
+    def test_an_alias_like_v100_leaves_the_fixed_title_alone(self):
+        self.s.env["HARNESS_GPU_SSH"] = "v100"
+        self.run_publish()
+        create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
+        self.assertEqual(create[create.index("--title") + 1], "Daily data: prices and V100 runs, 30 Oct 2026")
+
     def test_retry_after_the_harness_push_skips_commit_and_push(self):
         git(self.s.repo, "add", "-A")
         git(self.s.repo, "commit", "-q", "-m", "data")
@@ -583,7 +596,7 @@ class PublishTests(unittest.TestCase):
 
     def test_second_call_returns_the_existing_pr_and_changes_nothing(self):
         first = self.run_publish()
-        self.fake.pr_list = json.dumps([{"url": first.pr_urls[0], "isDraft": False, "body": "x"}])
+        self.fake.pr_list = json.dumps([own_pr(first.pr_urls[0], draft=False)])
         before = len(self.fake.calls)
         remote_before = git(self.s.harness_remote, "rev-parse", "main"), git(self.s.site_remote, "rev-parse", "daily-2026-10-30")
         second = self.run_publish()
@@ -601,13 +614,66 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(first.draft)
         self.fake = Fake()
         url = "https://github.com/Starfield-Inc/starfield-website/pull/99"
-        self.fake.pr_list = json.dumps([{"url": url, "isDraft": False, "body": "marked ready by hand"}])
+        self.fake.pr_list = json.dumps([own_pr(url, draft=False)])
         second = self.run_publish()
         self.assertTrue(second.draft)
         self.assertEqual(second.harness_sha, "")
         self.assertIn("data not pushed", second.text)
         self.assertIn(["gh", "pr", "ready", url, "--undo"], [a[:5] for a in self.fake.argvs()])
         self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+
+    def test_existing_pr_whose_manifest_cannot_be_read_is_turned_back_to_a_draft(self):
+        self.fake.pr_list = json.dumps([own_pr(PR_URL, draft=False)])
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertIn("It is not known whether the harness data was pushed", res.text)
+        self.assertIn(["gh", "pr", "ready", PR_URL, "--undo"], [a[:5] for a in self.fake.argvs()])
+
+    def test_a_fork_pr_with_the_same_branch_name_is_ignored(self):
+        fork = "https://github.com/someone/starfield-website/pull/7"
+        self.fake.pr_list = json.dumps([own_pr(fork, draft=False, fork=True)])
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [PR_URL])
+        self.assertFalse([a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "ready"]])
+        listed = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "list"])
+        self.assertEqual(listed[listed.index("--json") + 1],
+                         "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName")
+        self.assertIn(f"Ignored the pull request {fork} from another repository", self.body())
+
+    def test_private_text_in_site_files_stops_the_site_push(self):
+        self.s.env["HARNESS_PRIVATE_TERMS"] = "benchacct"
+        logdir = Path(self.tmp.name) / "logs"
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(logdir)
+        self.s.summary.write_text("run_date,model,where\n2026-10-30,Qwen/Qwen3-8B,benchacct on node7.lab.example.org\n")
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        self.assertFalse([a for a in self.fake.argvs() if a[:2] == ["git", "push"] or a[:3] == ["gh", "pr", "create"]])
+        self.assertEqual(git(self.s.site_remote, "branch", "--list", "daily-2026-10-30"), "")
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+        self.assertFalse((Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30").exists())
+        log = (logdir / "harness-daily-2026-10-30.log").read_text()
+        self.assertIn("| no host details in site files | FAIL | private text matched: host name, private term |", log)
+        self.assertNotIn("benchacct", log)
+        self.assertNotIn("node7", log)
+        self.assertTrue([a for a in self.fake.argvs() if a[0] == "osascript"])
+
+    def test_local_main_stays_when_this_run_pushed_nothing_and_a_check_failed(self):
+        other = Path(self.tmp.name) / "other"
+        subprocess.run(["git", "clone", "-q", str(self.s.harness_remote), str(other)], check=True, capture_output=True)
+        for f in (self.s.sheet, self.s.summary, *publish_module.run_file_group(self.s.run_csv)):
+            rel = f.relative_to(self.s.repo)
+            (other / rel).parent.mkdir(parents=True, exist_ok=True)
+            (other / rel).write_bytes(f.read_bytes())
+        git(other, "add", "-A")
+        git(other, "commit", "-q", "-m", "data from another machine")
+        git(other, "push", "-q", "origin", "HEAD:main")
+        before = git(self.s.repo, "rev-parse", "HEAD")
+        self.fake.fail_on = {"npm test"}
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertEqual(git(self.s.repo, "rev-parse", "HEAD"), before)
+        self.assertNotIn(["git", "merge", "--ff-only", "origin/main"], self.fake.argvs())
+        self.assertNotIn("Local main was fast-forwarded", self.body())
 
     def test_price_change_is_flagged(self):
         s = Setup(Path(self.tmp.name) / "changed", changed=True)
