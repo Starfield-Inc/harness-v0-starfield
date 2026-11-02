@@ -22,7 +22,7 @@ from typing import NamedTuple
 from harness.checks import FAIL, FLAG, PASS, Check, is_draft, render_markdown
 from harness.checks.runs import PRIVACY_PATTERNS
 from harness.daily_types import GpuResult, PriceResult, PublishResult, is_dry_run
-from harness.scrub import scrub
+from harness.scrub import private_hits, scrub
 from harness.price_table import (DEFAULT_MAIN_MODELS, build_table, change_text, load_main_models,
                                  read_sheet, split_steps, step_note)
 
@@ -283,11 +283,13 @@ def _private_labels(text):
     return [label for label, pat in PRIVACY_PATTERNS.items() if re.search(pat, text, re.IGNORECASE)]
 
 
-def scan_added_lines(diff_text):
+def scan_added_lines(diff_text, env):
+    """Kinds of private text in the added lines: the privacy patterns, the private terms as whole tokens,
+    and the scrub's host name and local path rules. The labels never quote the text itself."""
     hits = []
     for line in diff_text.splitlines():
         if line.startswith("+") and not line.startswith("+++"):
-            hits += _private_labels(line[1:])
+            hits += _private_labels(line[1:]) + private_hits(line[1:], env)
     return sorted(set(hits))
 
 
@@ -709,9 +711,15 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
     diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json"], cwd=clone).stdout
-    hits = scan_added_lines(diff)
+    hits = scan_added_lines(diff, ctx.env)
     own.append(Check("no host details in site files", FAIL if hits else PASS,
                      f"private text matched: {', '.join(hits)}" if hits else "added lines scanned, no private text"))
+    if hits:
+        # The site branch would carry the private text to the site repository, even as a draft.
+        shutil.rmtree(clone, ignore_errors=True)
+        summary = [*header, "The site files held private text, so the site branch was not pushed and no pull request "
+                            "was opened. The job's clone of the site repository was deleted."]
+        return _report_locally(day, summary, [*inputs, *own, *flags_extra], ctx.env, runner, "" if committed else sha)
 
     pushed, local_note = False, []
     if not committed:
@@ -723,7 +731,8 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     if pushed:
         progress.pushed_sha = sha
         own.append(_public_check(runner, _github_slug(repo_url) or "", sha))
-        local_note = [_update_local_main(repo, data_paths, workdir, runner)]
+        if committed or not is_draft([*inputs, *own]):
+            local_note = [_update_local_main(repo, data_paths, workdir, runner)]
 
     checks = [*inputs, *own, *flags_extra]
     summary = [*header,

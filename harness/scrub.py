@@ -9,14 +9,13 @@ SAFE_DOMAINS = ("github.com", "raw.githubusercontent.com", "starfield.net", "hug
 FILE_SUFFIXES = {"py", "json", "csv", "md", "txt", "log", "yml", "yaml", "toml", "html", "mjs", "js", "sh",
                  "plist", "lock", "cfg", "ini", "env", "gz", "tar", "zip", "whl", "so"}
 PROTECTED = re.compile(r"https?://[^\s)\]>\"'`]+|\]\(/[^)\s]*\)")
-PATTERNS = [
-    re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])"),
-    re.compile(r"(?:/Users|/home|/data|/private|/var|/tmp|/opt)/[^\s'\"`)]*"),
-    # Any other absolute path of two or more segments. A relative path such as harness/x.py has a word
-    # character before its first slash, so the look-behind keeps it.
-    re.compile(r"(?<![\w.~:/-])/[\w.@+~-]+(?:/[\w.@+~-]+)+/?"),
-    re.compile(r"~/[^\s'\"`)]*"),
-]
+IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+LOCAL_PATH = re.compile(r"(?:/Users|/home|/data|/private|/var|/tmp|/opt)/[^\s'\"`)]*")
+# Any other absolute path of two or more segments. A relative path such as harness/x.py has a word
+# character before its first slash, so the look-behind keeps it.
+ABSOLUTE_PATH = re.compile(r"(?<![\w.~:/-])/[\w.@+~-]+(?:/[\w.@+~-]+)+/?")
+HOME_PATH = re.compile(r"~/[^\s'\"`)]*")
+PATTERNS = [IPV4, LOCAL_PATH, ABSOLUTE_PATH, HOME_PATH]
 HOST = re.compile(r"\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?){2,}\b(?!\()", re.I)
 CLASS_NAME = re.compile(r"[A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*")
 USERINFO = re.compile(r"(?<=://)[^\s/@]*@")
@@ -86,7 +85,7 @@ def private_hits(text: str, env: dict) -> list[str]:
         "private term": bool(terms and terms.search(text)),
         "secret": bool(SECRETS.search(text)),
         "credentials in a link": bool(USERINFO.search(text)),
-        "local path": bool(PATTERNS[0].search(outside) or PATTERNS[3].search(outside)),
+        "local path": bool(LOCAL_PATH.search(outside) or HOME_PATH.search(outside)),
         "host name": any(_host(m) != m.group() for m in HOST.finditer(outside)),
     }
     return [label for label, hit in checks.items() if hit]

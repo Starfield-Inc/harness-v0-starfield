@@ -12,13 +12,15 @@ The job runs these steps in order.
 4. It commits the new data in a separate `git worktree` of this repository, on the temporary branch `daily-data-YYYY-MM-DD`, which starts from `origin/main`. It never commits in your checkout, never switches your branch and never changes your index.
 5. It builds the site branch (price page, prices index, harness manifest) and runs the site's own commands and checks on it.
 6. If no check has failed, it pushes the data commit with `git push origin daily-data-YYYY-MM-DD:main`. The push is fast-forward only. If any check has failed, it pushes nothing.
-7. It opens a pull request on the site repository with the new pages and a table of the check results.
-8. It removes the temporary worktree and the temporary branch, whether the run passed, failed or stopped with an error.
+7. It scans the lines it added to the site files for private text (see "Private text in the site files" below). If it finds any, it stops here: it pushes no site branch and opens no pull request.
+8. It pushes the site branch and opens a pull request on the site repository with the new pages and a table of the check results.
+9. It removes the temporary worktree and the temporary branch, whether the run passed, failed or stopped with an error.
 
 ### Your checkout after a push
 
-After a push, the job brings your local `main` up to date with `git merge --ff-only origin/main`, but only when all of these are true.
+The job brings your local `main` up to date with `git merge --ff-only origin/main`, but only when all of these are true.
 
+- This run pushed the data commit, or `origin/main` already held the day's data and no check of this run failed. When an earlier push or another machine put the data on `origin/main` and a check of this run failed, the job leaves your checkout alone.
 - Your checkout is on `main`.
 - Your local `main` has no commits that are not on `origin/main`.
 - Each of the day's data files in your checkout is untracked and the same as the pushed copy. The job removes these copies first, because they would block the fast-forward. If the fast-forward fails, it puts them back.
@@ -33,7 +35,7 @@ If any check fails, the pull request opens as a draft. A draft cannot be merged 
 
 ### When the job opens no pull request
 
-The job needs the day's price sheet and an earlier sheet to build the price page. If either sheet is missing, the job opens no pull request and pushes nothing. The same happens when the GitHub CLI cannot list or open pull requests, for example because its login has expired, and when the publish step stops with any error. The job then does these things.
+The job needs the day's price sheet and an earlier sheet to build the price page. If either sheet is missing, the job opens no pull request and pushes nothing. The same happens when the site files hold private text, when the GitHub CLI cannot list or open pull requests, for example because its login has expired, and when the publish step stops with any error. The job then does these things.
 
 1. It writes the report, with host and account details removed, to `harness-daily-YYYY-MM-DD.log` in `HARNESS_DAILY_LOG_DIR`, or in the system temp directory when that key is not set.
 2. It shows a macOS notification that names the log file. If the notification fails, the job goes on.
@@ -67,6 +69,18 @@ In the last two cases, if someone marked the pull request ready for review, the 
 If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way. The job opens a draft pull request from that branch as it is, with the same pushed or not pushed sentence. The FAIL check `site checks` says that the site checks were not run again.
 
 The data commit is also safe to repeat. The job fetches `origin` and compares each of the day's files with `origin/main`. If `origin/main` already holds all of them, the job makes no commit and no push, and uses the commit that added them.
+
+### Private text in the site files
+
+Before it pushes the site branch, the job scans every line it added to the site files, except the golden file. The FAIL check `no host details in site files` lists the kinds of text it found, never the text itself. The scan looks for these things.
+
+- The privacy patterns of the run files: a home path, `/data/`, an IPv4 address, an at sign, or the word ssh.
+- Each word in `HARNESS_PRIVATE_TERMS` and each value of the host and path keys, as a whole token, the same way the scrub matches them.
+- Host names that the scrub removes, outside web links. Web links stay out of this rule, because the price sheets link to each provider's pricing page.
+- Local folders such as `/Users/...` and paths that start with `~/`. Other absolute paths stay out of this rule, because the site pages use site paths such as `/research/prices/`.
+- Secret tokens and user names or passwords in links.
+
+If the check fails, the job does not push the site branch, even as a draft, because a pushed branch can be read by everyone who can read the site repository. It opens no pull request, deletes its clone of the site repository, and writes the local report and shows the notification as described in "When the job opens no pull request". The harness data is not pushed either, because a check failed.
 
 ### Pull request text
 
