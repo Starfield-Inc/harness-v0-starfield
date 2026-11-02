@@ -137,6 +137,14 @@ class CheckRunsTest(unittest.TestCase):
             checks = {c.name.split(" [")[0]: c for c in check_runs([path], expected, [])}
         self.assertEqual(checks["privacy"].status, FAIL)
 
+    def test_private_terms_match_whole_words_only(self):
+        expected = {**EXPECTED, "private_terms": ["2201", "ubuntu"]}
+        for text, status_is_fail in (('{"x": 22010, "y": "ubuntuish"}', False), ('{"x": "port 2201"}', True)):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as d:
+                path = write_run(Path(d), raw_text=text)
+                checks = {c.name.split(" [")[0]: c for c in check_runs([path], expected, [])}
+                self.assertEqual(checks["privacy"].status == FAIL, status_is_fail)
+
     def test_privacy_fails_on_planted_text_in_csv_and_record(self):
         rows = [dict(GOOD_ROW, repeat_index=i, cli_call="ssh 10.1.2.3") for i in (1, 2, 3)]
         self.assertStatus(self.results(rows=rows), "privacy", FAIL)

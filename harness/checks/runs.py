@@ -128,7 +128,7 @@ def rule_privacy(run, expected, previous):
         except OSError as e:
             problems.append(f"cannot read {f.name}: {e}")
             continue
-        patterns = {**PRIVACY_PATTERNS, **{t: re.escape(t) for t in expected.get("private_terms", ())}}
+        patterns = {**PRIVACY_PATTERNS, **{t: r"(?<![A-Za-z0-9])" + re.escape(t) + r"(?![A-Za-z0-9])" for t in expected.get("private_terms", ())}}
         problems += [f"{f.name} matches {label!r}" for label, pat in patterns.items()
                      if re.search(pat, text, re.IGNORECASE)]
     return _verdict(problems, f"{len(files)} files scanned, no private text")
