@@ -165,7 +165,7 @@ The push command is not a setting. The job always pushes with `git push origin d
 | `HARNESS_GPU_INDEX` | The index of the one GPU the runs use. |
 | `HARNESS_SITE_REPO_URL` | The clone URL of the site repository. |
 | `HARNESS_SITE_WORKDIR` | The local directory where the job keeps its clone of the site repository and its temporary harness worktree. |
-| `HARNESS_GH_CONFIG_DIR` | The GitHub CLI config directory whose login opens the pull request. |
+| `HARNESS_GH_CONFIG_DIR` | The GitHub CLI config directory whose login opens the pull request. The job also uses that login for every git command that clones, fetches, pushes or lists a remote. It passes the login in environment variables (`GH_CONFIG_DIR` and git's `GIT_CONFIG_*` credential helper), so the path is never in a command line, a log or a report. With no working login, git fails at once and does not ask. |
 | `HARNESS_DAILY_ENV` | The path of the env file itself. |
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
 | `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |

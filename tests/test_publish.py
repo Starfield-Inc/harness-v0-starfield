@@ -287,6 +287,47 @@ class PublishTests(unittest.TestCase):
         pushes = [a for a in self.fake.argvs() if a[:2] == ["git", "push"]]
         self.assertEqual(pushes, [DATA_PUSH, ["git", "push", "-u", "origin", "daily-2026-10-30"]])
 
+    def test_remote_git_commands_carry_the_login_in_env_and_local_ones_need_none(self):
+        self.run_publish()
+        keys = {"GH_CONFIG_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+                "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1", "GIT_TERMINAL_PROMPT"}
+        remote = [(a, e) for a, _, e in self.fake.calls if a[0] == "git" and a[1] in {"clone", "fetch", "push", "ls-remote"}]
+        self.assertEqual({a[1] for a, _ in remote}, {"clone", "fetch", "push", "ls-remote"})
+        for argv, env in remote:
+            self.assertTrue(keys <= set(env or {}), argv)
+            self.assertEqual(env["GH_CONFIG_DIR"], self.s.env["HARNESS_GH_CONFIG_DIR"])
+            self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+            self.assertEqual((env["GIT_CONFIG_VALUE_0"], env["GIT_CONFIG_VALUE_1"]), ("", "!gh auth git-credential"))
+            self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        for argv, _, env in self.fake.calls:
+            if argv[0] == "git" and argv[1] in {"status", "commit", "worktree"}:
+                self.assertFalse(env and "GIT_CONFIG_COUNT" in env, argv)
+        self.assertEqual([a for a, _ in remote if a[1] == "push"],
+                         [DATA_PUSH, ["git", "push", "-u", "origin", "daily-2026-10-30"]])
+
+    def test_the_login_path_is_in_no_command_line_and_no_report(self):
+        gh_dir = self.s.env["HARNESS_GH_CONFIG_DIR"]
+        logs = Path(self.tmp.name) / "logs"
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(logs)
+        self.fake.git_fail = {"git push"}
+        self.fake.raise_on = {"git push -u"}
+        res = self.run_publish()
+        for argv in self.fake.argvs():
+            self.assertFalse(any(gh_dir in a for a in argv), argv)
+        reports = list(logs.glob("harness-daily-*.log"))
+        self.assertTrue(reports)
+        for report in reports:
+            self.assertNotIn(gh_dir, report.read_text())
+        self.assertNotIn(gh_dir, str(res))
+
+    def test_the_guard_still_refuses_merge_force_and_plus_refspecs(self):
+        run = publish_module._with_git_credentials(self.fake, self.s.env)
+        for argv in (["git", "merge", "x"], ["git", "push", "--force", "origin", "x"],
+                     ["gh", "pr", "merge", "--auto"], ["gh", "pr", "merge", "--admin"],
+                     ["git", "push", "origin", "+x:main"]):
+            with self.assertRaises(publish_module.PublishError):
+                publish_module._sh(run, argv)
+
     def body(self, s=None):
         s = s or self.s
         return (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()

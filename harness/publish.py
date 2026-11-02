@@ -70,6 +70,29 @@ def run_command(argv, cwd=None, env=None, timeout=None):
         return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout} s")
 
 
+REMOTE_GIT = {"clone", "fetch", "push", "ls-remote", "pull"}
+
+
+def git_credential_env(env):
+    """Env for a git command that talks to a remote. It uses the gh login in HARNESS_GH_CONFIG_DIR, never argv."""
+    return {"GH_CONFIG_DIR": env.get("HARNESS_GH_CONFIG_DIR", ""),
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": "!gh auth git-credential",
+            "GIT_TERMINAL_PROMPT": "0"}
+
+
+def _with_git_credentials(runner, env):
+    # One place for every remote-facing git call, so a new call cannot forget the login.
+    creds = git_credential_env(env)
+
+    def run(argv, cwd=None, env=None, **kw):
+        if len(argv) > 1 and argv[0] == "git" and argv[1] in REMOTE_GIT:
+            env = {**creds, **(env or {})}
+        return runner(argv, cwd=cwd, env=env, **kw)
+    return run
+
+
 def _sh(runner, argv, cwd=None, env=None, check=True):
     if (FORBIDDEN_TOKENS & set(argv) and not _allowed(argv)) or (
             argv[:2] == ["git", "push"] and any(a.startswith("+") for a in argv)):
@@ -594,6 +617,7 @@ class _Progress:
 
 def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, env, runner=run_command) -> PublishResult:
     """Never raises. Any error writes the scrubbed report to the local log folder instead of a PR."""
+    runner = _with_git_credentials(runner, env)
     progress = _Progress()
     try:
         return _publish(day, Path(repo), price_result, gpu_result, env, runner, progress)
