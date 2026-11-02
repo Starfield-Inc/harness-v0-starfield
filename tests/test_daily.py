@@ -223,8 +223,10 @@ class TestRun(Case):
         config = ("user root\nhostname gpu-01.lan\nport 2222\nidentityfile ~/.ssh/id_ed25519\n"
                   "identityfile ~/.ssh/bench_key\n")
         self.assertEqual(daily.ssh_terms(config), ["gpu-01.lan", "id_ed25519", "bench_key"])
-        for user in ("root", "ubuntu", "admin", "user", "abc"):
+        for user in ("root", "ubuntu", "admin", "user", "pi", "ec2-user", "Root", "ab"):
             self.assertEqual(daily.ssh_terms(f"user {user}\n"), [])
+        for user in ("abc", "bob", "steve"):
+            self.assertEqual(daily.ssh_terms(f"user {user}\n"), [user])
         self.assertEqual(daily.ssh_terms("user benchacct\nport 22\n"), ["benchacct"])
 
     def test_a_port_term_does_not_break_a_commit_link(self):

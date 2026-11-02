@@ -28,7 +28,7 @@ from harness.daily_types import PriceResult, is_dry_run
 from harness.publish import run_command, write_report
 from harness.scrub import scrub
 
-DEFAULT_USERS = {"root", "ubuntu", "admin", "user"}
+DEFAULT_USERS = {"root", "ubuntu", "admin", "user", "pi", "ec2-user"}
 
 
 class LockError(Exception):
@@ -108,7 +108,7 @@ class Lock:
 
 
 def ssh_terms(ssh_config: str) -> list[str]:
-    """Values from `ssh -G` output that name the host or the account. A port is not secret, and a short or
+    """Values from `ssh -G` output that name the host or the account. A port is not secret, and a very short or
     default user name such as root is a common word, so neither becomes a term."""
     terms = []
     for line in ssh_config.splitlines():
@@ -117,7 +117,7 @@ def ssh_terms(ssh_config: str) -> list[str]:
         if key == "identityfile":
             value = Path(value).name
         elif key == "user":
-            value = "" if len(value) < 4 or value.lower() in DEFAULT_USERS else value
+            value = "" if len(value) < 3 or value.lower() in DEFAULT_USERS else value
         elif key != "hostname":
             continue
         if value and value not in terms:
