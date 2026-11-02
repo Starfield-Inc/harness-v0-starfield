@@ -123,6 +123,9 @@ def rule_privacy(run, expected, previous):
     if len(raw) < expected["n_repeats"]:
         problems.append(f"{len(raw)} raw json files, expected {expected['n_repeats']}")
     for f in files:
+        if f.is_symlink():
+            problems.append(f"{f.name} is a link, not a file")
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except OSError as e:

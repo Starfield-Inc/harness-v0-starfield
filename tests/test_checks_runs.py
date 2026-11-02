@@ -159,6 +159,18 @@ class CheckRunsTest(unittest.TestCase):
         text = json.dumps({"v": "0.19.1", "driver": "580.178.04", "n": "170.99979981333794", "h": "hash"})
         self.assertStatus(self.results(raw_text=text), "privacy", PASS)
 
+    def test_privacy_fails_on_a_linked_file(self):
+        csv_path = write_run(self.dir)
+        elsewhere = self.dir / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "key").write_text("{}", encoding="utf-8")
+        raw = self.dir / f"{RUN_ID}-r1.json"
+        raw.unlink()
+        raw.symlink_to(elsewhere / "key")
+        check = {c.name.split(" [")[0]: c for c in check_runs([csv_path], EXPECTED, [])}["privacy"]
+        self.assertEqual(check.status, FAIL)
+        self.assertIn("link", check.detail)
+
     def test_privacy_fails_when_raw_files_missing(self):
         self.assertStatus(self.results(n_raw=2), "privacy", FAIL)
 
