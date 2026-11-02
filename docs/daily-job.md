@@ -10,7 +10,7 @@ The job runs these steps in order.
 2. It runs every model in `config/models.json` on one GPU with the pinned vLLM, using the fixed prompt set.
 3. It runs the checks listed below on the price sheet and on the run files.
 4. It commits the new data in a separate `git worktree` of this repository, on the temporary branch `daily-data-YYYY-MM-DD`, which starts from `origin/main`. It never commits in your checkout, never switches your branch and never changes your index.
-5. It builds the site branch (price page, prices index, harness manifest) and runs the site's own commands and checks on it.
+5. It builds the site branch (price page, cover image, prices index, harness manifest) and runs the site's own commands and checks on it.
 6. If no check has failed, it pushes the data commit with `git push origin daily-data-YYYY-MM-DD:main`. The push is fast-forward only. If any check has failed, it pushes nothing.
 7. It scans the lines it added to the site files for private text (see "Private text in the site files" below). If it finds any, it stops here: it pushes no site branch and opens no pull request.
 8. It pushes the site branch and opens a pull request on the site repository with the new pages and a table of the check results.
@@ -72,9 +72,13 @@ If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull r
 
 The data commit is also safe to repeat. The job fetches `origin` and compares each of the day's files with `origin/main`. If `origin/main` already holds all of them, the job makes no commit and no push, and uses the commit that added them.
 
+### The cover image
+
+The site's tests need a cover for each research page. After the price page and the manifest check, the job writes the graphics spec `content/graphics/research/prices-YYYY-MM-DD.json` with `{"hero": {"variant": N}, "blocks": []}`. N is the variant of the newest earlier price page's spec plus one. After the last variant it starts again at 0, and with no earlier spec it is 0, so two price pages in a row never share a cover layout. The job reads the number of variants from the `VARIANTS` list in the site's `deploy/graphics.mjs`. It then runs `npm run build`, because the cover embeds the site's fonts, and `npm run graphics -- heroes research/prices-YYYY-MM-DD`, which renders `assets/research-covers/prices-YYYY-MM-DD/hero.png` (1280 by 720) with headless Chrome and adds the page to `assets/news/heroes.json`. Research pages have no card image. The job passes the Chrome path from `HARNESS_CHROME` to the site as `CHROME`. The check `cover image` passes and names the files. If Chrome is not there, a command fails, or no cover was written, the check fails with the reason, the job goes on, and the pull request opens as a draft. If the spec, the cover and its `heroes.json` entry are already on the site's main branch, the job makes nothing again. If only the spec is there, the job keeps its variant and renders the cover.
+
 ### Private text in the site files
 
-Before it pushes the site branch, the job scans every line it added to the site files, except the golden file. The FAIL check `no host details in site files` lists the kinds of text it found, never the text itself. The scan looks for these things.
+Before it pushes the site branch, the job scans every line it added to the site files, except the golden file and the PNG images, which are not text. The FAIL check `no host details in site files` lists the kinds of text it found, never the text itself. The scan looks for these things.
 
 - The privacy patterns of the run files: a home path, `/data/`, an IPv4 address, an at sign, or the word ssh.
 - Each word in `HARNESS_PRIVATE_TERMS` and each value of the host and path keys, as a whole token, the same way the scrub matches them.
@@ -146,6 +150,10 @@ Run files, one set of checks for each model.
 - `one GPU`. The run record lists one GPU, and its name matches the expected card.
 - `privacy`. The run files hold no private text, such as a home path, an IP address, an at sign, or the word ssh.
 
+Site branch.
+
+- `cover image`. The graphics spec and the cover of the new price page were written (see "The cover image" above). The detail names the files, or says why the cover was not made.
+
 ### FLAG checks
 
 A FLAG does not draft the pull request. It asks a person to look before merging.
@@ -177,6 +185,7 @@ The push command is not a setting. The job always pushes with `git push origin d
 | `HARNESS_DAILY_ENV` | The path of the env file itself. |
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
 | `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |
+| `HARNESS_CHROME` | The path of the Chrome program that renders the cover image. The default is `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. If the file is not there, the `cover image` check fails. |
 | `HARNESS_DRY_RUN` | `1`, `true`, `yes` or `on`, in any case, turns on dry run. The GPU step lists its commands and runs none. The publish step makes no commit, no push, no clone and no pull request, and prints what it would do. Any other value, or no value, is a normal run. |
 | `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run, except words that already appear in the public repository. |
 | `SLACK_WEBHOOK_URL_TEST` | The Slack webhook of the test channel. The job posts here unless `SLACK_TARGET` is `main`. |
