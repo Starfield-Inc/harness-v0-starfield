@@ -441,11 +441,11 @@ class ScriptTest(unittest.TestCase):
         self.assertEqual(self.script.count('[ "$rc" -eq 0 ] || stop'), len(MODELS))
 
     def test_remote_time_limits(self):
-        self.assertIn("timeout 5400 bash", daily_gpu.start_argv(self.host, STAMP)[-1])
+        self.assertIn("timeout -k 30 5400 bash", daily_gpu.start_argv(self.host, STAMP)[-1])
         runs = [line for line in self.script.splitlines() if "harness.vllm_run" in line]
         self.assertEqual(len(runs), len(MODELS))
         for line in runs:
-            self.assertTrue(line.startswith("timeout --foreground 1500 "), line)
+            self.assertTrue(line.startswith("timeout -k 30 --foreground 1500 "), line)
 
     def test_nothing_is_killed_by_name(self):
         for text in (self.script, daily_gpu.stop_argv(self.host, STAMP)[-1]):
@@ -483,9 +483,10 @@ class ScriptTest(unittest.TestCase):
 
 FAKE_TOOLS = {
     "nvidia-smi": "echo 0\n",
-    "pgrep": 'exit "${FAKE_PGREP_CODE:-1}"\n',
-    "timeout": 'while [ "$#" -gt 0 ]; do case "$1" in -*) shift;; [0-9]*) shift; break;; *) break;; esac; done\nexec "$\x40"\n',
-    "python3": 'sleep 60 &\necho $! > "$CHILD_PID"\n[ -z "$HOLD" ] || wait\nexit 1\n',
+    # the cleanup's process group lookup goes to the real pgrep
+    "pgrep": '[ "$1" != -g ] || exec /usr/bin/pgrep "$\x40"\nexit "${FAKE_PGREP_CODE:-1}"\n',
+    "timeout": 'while [ "$#" -gt 0 ]; do case "$1" in -k) shift 2;; -*) shift;; [0-9]*) shift; break;; *) break;; esac; done\nexec "$\x40"\n',
+    "python3": 'if [ -n "$IGNORE_TERM" ]; then (trap "" TERM; exec sleep 60) & else sleep 60 & fi\necho $! > "$CHILD_PID"\n[ -z "$HOLD" ] || wait\nexit 1\n',
 }
 
 
@@ -517,7 +518,7 @@ class ScriptRunTest(unittest.TestCase):
         proc = subprocess.Popen(argv, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 env={**os.environ, "CHILD_PID": str(self.child_pid), **env})
         self.addCleanup(proc.wait)
-        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, 9))
         return proc
 
     def gone(self, pid):
@@ -550,6 +551,20 @@ class ScriptRunTest(unittest.TestCase):
         log = Path(self.host.paths(STAMP)["log"]).read_text()
         self.assertEqual([m for m in daily_gpu._log_markers(log) if m.startswith("STOP")],
                          ["STOP stopped by a signal or the time limit"])
+
+    def test_cleanup_kills_a_process_that_ignores_term(self):
+        job = self.start(["bash", str(self.script)], HOLD="1", IGNORE_TERM="1")
+        for _ in range(100):
+            if self.child_pid.exists() and self.child_pid.read_text().strip():
+                break
+            time.sleep(0.05)
+        pid = int(self.child_pid.read_text())
+        self.addCleanup(lambda: self.gone(pid) or os.kill(pid, 9))
+        subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]], check=True)
+        time.sleep(1)
+        self.assertFalse(self.gone(pid), "the fake job should ignore TERM")
+        job.wait(timeout=daily_gpu.KILL_AFTER_SECONDS + 10)
+        self.assertTrue(self.gone(pid))
 
     def test_failed_model_kills_the_jobs_own_processes(self):
         self.start(["bash", str(self.script)]).wait(timeout=30)

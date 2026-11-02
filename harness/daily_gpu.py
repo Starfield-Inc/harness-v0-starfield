@@ -44,6 +44,7 @@ POLL_SECONDS = 60
 TOTAL_LIMIT_SECONDS = 90 * 60
 MODEL_LIMIT_SECONDS = 25 * 60
 MAX_POLL_FAILURES = 5
+KILL_AFTER_SECONDS = 10
 RUNNER_TIMEOUT_SECONDS = 900
 SSH_OPTIONS = ["-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"]
 ENV_KEYS = ("HARNESS_GPU_SSH", "HARNESS_GPU_WORKDIR", "HARNESS_GPU_ENV_PATH", "HARNESS_GPU_HF_HOME")
@@ -122,7 +123,20 @@ def render_script(host: Host, models: list[dict], stamp: str) -> str:
         'PGID=$(ps -o pgid= -p $$ | tr -d " ")',
         f'echo "$PGID" > {q(str(p["pgid"]))}',
         # only this job's process group: a vllm server someone else started on another GPU is left alone
-        "cleanup() { trap '' TERM; [ -n \"$PGID\" ] && kill -s TERM -- \"-$PGID\" 2> /dev/null; }",
+        "cleanup() {",
+        "  trap '' TERM",
+        '  [ -n "$PGID" ] || return',
+        '  kill -s TERM -- "-$PGID" 2> /dev/null',
+        f"  for _ in $(seq {KILL_AFTER_SECONDS}); do",
+        # pgrep writes to a file, not a pipe, so no helper process of this check is in the group;
+        # the script and the timeout that leads the group do not count
+        '    pgrep -g "$PGID" > "$LOG.pg"',
+        '    grep -qvx -e "$$" -e "$PGID" "$LOG.pg" || return 0',
+        "    sleep 1",
+        "  done",
+        '  log "cleanup: KILL"',
+        '  kill -s KILL -- "-$PGID"',
+        "}",
         "trap cleanup EXIT",
         "trap 'stop \"stopped by a signal or the time limit\"' TERM",
         "guard() {",
@@ -147,7 +161,7 @@ def render_script(host: Host, models: list[dict], stamp: str) -> str:
             "guard",
             f"log {q(f'model {mid}: guard ok')}",
             # --foreground keeps the run in the job's process group, so the cleanup also reaches its server
-            f'timeout --foreground {MODEL_LIMIT_SECONDS} {run_cmd} >> "$LOG.out" 2>&1',
+            f'timeout -k 30 --foreground {MODEL_LIMIT_SECONDS} {run_cmd} >> "$LOG.out" 2>&1',
             "rc=$?",
             f'log {q(f"model {mid}: exit")} "$rc"',
             f'[ "$rc" -eq 0 ] || stop {q(f"model {mid} failed")}',
@@ -197,7 +211,7 @@ def start_argv(host, stamp):
     log = str(p["log"])
     return _remote(host, (
         f": > {q(log)} && : > {q(log + '.out')} && "
-        f"{{ nohup setsid timeout {TOTAL_LIMIT_SECONDS} bash {q(str(p['script']))} > /dev/null 2>&1 < /dev/null & }}"))
+        f"{{ nohup setsid timeout -k 30 {TOTAL_LIMIT_SECONDS} bash {q(str(p['script']))} > /dev/null 2>&1 < /dev/null & }}"))
 
 
 def poll_argv(host, stamp):
