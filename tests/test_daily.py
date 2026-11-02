@@ -228,7 +228,7 @@ class TestRun(Case):
         self.assertEqual(daily.ssh_terms(config), ["gpu-01.lan", "id_ed25519", "bench_key"])
         for user in ("root", "ubuntu", "admin", "user", "pi", "ec2-user", "Root", "ab"):
             self.assertEqual(daily.ssh_terms(f"user {user}\n"), [])
-        for user in ("abc", "bob", "steve"):
+        for user in ("abc", "bob", "carol"):
             self.assertEqual(daily.ssh_terms(f"user {user}\n"), [user])
         self.assertEqual(daily.ssh_terms("user benchacct\nport 22\n"), ["benchacct"])
 
