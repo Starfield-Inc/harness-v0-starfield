@@ -125,23 +125,46 @@ def ssh_terms(ssh_config: str) -> list[str]:
     return terms
 
 
-def add_ssh_terms(env, runner):
+def _in_public_repo(term, repo, runner) -> bool:
+    """True when the term is a whole word in a tracked file. The repo holds the public docs and data,
+    so a private term that appears there would match every day's real data."""
+    try:
+        res = runner(["git", "-C", str(repo), "grep", "-iwqF", "--", term])
+    except Exception:
+        return False
+    return res.returncode == 0
+
+
+def add_ssh_terms(env, runner, repo) -> list[str]:
     """Add the real host, user and key file name behind the ssh alias, and the alias, to the words the
-    scrub removes."""
+    scrub removes. A word that already appears in the public repository is left out, because the site
+    scan would then find it in every day's data and no pull request would open. Returns those words."""
     alias = env.get("HARNESS_GPU_SSH", "").strip()
     if not alias:
-        return
+        return []
     try:
         res = runner(["ssh", "-G", alias])
     except Exception:
-        return
+        return []
     if res.returncode != 0:
-        return
+        return []
     terms = [t.strip() for t in env.get("HARNESS_PRIVATE_TERMS", "").split(",") if t.strip()]
+    skipped = []
     for t in [*ssh_terms(res.stdout), alias]:
-        if t not in terms:
-            terms.append(t)
+        if t in terms or t in skipped:
+            continue
+        (skipped if _in_public_repo(t, repo, runner) else terms).append(t)
     env["HARNESS_PRIVATE_TERMS"] = ",".join(terms)
+    # the scrub also reads the alias from HARNESS_GPU_SSH, so it has to be told to leave it alone
+    env["HARNESS_PUBLIC_TERMS"] = ",".join(skipped)
+    return skipped
+
+
+def skipped_note(skipped) -> str:
+    if not skipped:
+        return ""
+    return ("These terms were left out because they already appear in the public repository: "
+            f"{', '.join(skipped)}, choose a unique ssh alias.")
 
 
 def _prices(day, repo, env, fakes):
@@ -262,7 +285,7 @@ def _main(argv, out, env, fakes, runner) -> int:
     if is_dry_run(env):
         # daily_gpu reads only "1", so every accepted spelling is passed on as "1".
         env["HARNESS_DRY_RUN"] = "1"
-    add_ssh_terms(env, runner)
+    note = skipped_note(add_ssh_terms(env, runner, args.repo))
 
     def say(lines):
         print(scrub("\n".join(lines), env), file=out)
@@ -270,7 +293,8 @@ def _main(argv, out, env, fakes, runner) -> int:
     steps = [("prices", True), ("gpu", not args.skip_gpu), ("publish", not args.skip_publish)]
     if args.dry_run:
         say([f"daily run for {args.date}, repo {args.repo} (dry run, nothing executed)",
-             *(f"  {name}: {'would run' if enabled else 'skipped'}" for name, enabled in steps)])
+             *(f"  {name}: {'would run' if enabled else 'skipped'}" for name, enabled in steps),
+             *([note] if note else [])])
         return 0
 
     try:
@@ -289,10 +313,14 @@ def _main(argv, out, env, fakes, runner) -> int:
     opened = bool(published and published.pr_urls)
     lines.append(f"{'draft ' if published.draft else ''}PR: {', '.join(published.pr_urls)}" if opened
                  else "no PR opened")
+    if note:
+        lines.append(note)
     say(lines)
     if crashed:
         names = _join_names([c.name for c in crashed])
         write_report(args.date, "\n".join(lines) + "\n", env, runner, f"The {names} raised an error on {args.date}.")
+    elif note:
+        write_report(args.date, "\n".join(lines) + "\n", env, runner, "Some ssh words were left out of the privacy scrub.")
     return 0 if opened else 1
 
 

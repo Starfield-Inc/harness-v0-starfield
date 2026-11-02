@@ -43,6 +43,7 @@ class Case(unittest.TestCase):
         self.root = root
         self.runs = []
         self.ssh_g = None
+        self.public_words = set()
         today = mock.patch.object(daily, "utc_today", return_value=DAY)
         today.start()
         self.addCleanup(today.stop)
@@ -80,6 +81,8 @@ class Case(unittest.TestCase):
             if self.ssh_g is None:
                 return subprocess.CompletedProcess(argv, 255, "", "ssh: no config")
             return subprocess.CompletedProcess(argv, 0, self.ssh_g, "")
+        if argv[0] == "git" and "grep" in argv:
+            return subprocess.CompletedProcess(argv, 0 if argv[-1].lower() in self.public_words else 1, "", "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     def notifications(self):
@@ -239,6 +242,49 @@ class TestRun(Case):
         self.assertIn("root login", out)
         self.assertNotIn("gpu-01", out)
         self.assertNotIn("<redacted>-01", out)
+
+    def test_a_term_that_is_in_the_public_repo_is_left_out_and_the_run_goes_on(self):
+        self.environ["HARNESS_GPU_SSH"] = "gpu"
+        self.ssh_g = "user benchacct\nhostname gpu-7.cluster.example.org\nport 2201\n"
+        self.public_words = {"gpu"}
+        seen = {}
+        def gpu(day, repo, env):
+            seen["terms"] = env["HARNESS_PRIVATE_TERMS"].split(",")
+            return self.gpu(day, repo, env)
+        code, out = self.main(gpu=gpu)
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["terms"], ["benchacct", "gpu-7.cluster.example.org"])
+        note = ("These terms were left out because they already appear in the public repository: "
+                "gpu, choose a unique ssh alias.")
+        self.assertIn(note, out)
+        self.assertIn(note, self.report())
+        self.assertEqual(len(self.notifications()), 1)
+
+    def test_a_unique_alias_is_added_and_nothing_is_said(self):
+        self.environ["HARNESS_GPU_SSH"] = "gpubox"
+        self.ssh_g = "user benchacct\nhostname gpu-7.cluster.example.org\n"
+        code, out = self.main()
+        self.assertEqual(code, 0)
+        self.assertNotIn("left out", out)
+        self.assertFalse(self.logdir.exists())
+
+    def test_public_repo_check_uses_a_whole_word_match_in_a_real_repo(self):
+        def git(*a):
+            subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True)
+        git("init", "-q")
+        (self.repo / "speed.csv").write_text("gpu,tok_s\nTesla V100-SXM3-32GB,200\n")
+        git("add", "speed.csv")
+        def runner(argv, **kw):
+            if argv[:2] == ["ssh", "-G"]:
+                return subprocess.CompletedProcess(argv, 0, "user benchacct\n", "")
+            return subprocess.run(argv, capture_output=True, text=True)
+        for alias, kept in (("gpu", False), ("v100", False), ("gpus", True), ("rig-x9", True)):
+            with self.subTest(alias=alias):
+                env = {"HARNESS_GPU_SSH": alias}
+                skipped = daily.add_ssh_terms(env, runner, self.repo)
+                self.assertEqual(alias in env["HARNESS_PRIVATE_TERMS"].split(","), kept)
+                self.assertEqual(skipped, [] if kept else [alias])
+                self.assertIn("benchacct", env["HARNESS_PRIVATE_TERMS"])
 
     def test_ssh_config_failure_does_not_stop_the_run(self):
         self.environ["HARNESS_GPU_SSH"] = "gpubox"

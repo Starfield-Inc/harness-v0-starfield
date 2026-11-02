@@ -1,7 +1,7 @@
 import time
 import unittest
 
-from harness.scrub import scrub
+from harness.scrub import private_hits, scrub
 
 
 class ScrubTest(unittest.TestCase):
@@ -81,6 +81,13 @@ class ScrubTest(unittest.TestCase):
         self.assertTrue(out.startswith("torch@2.4 ssh "))
         for bad in ("root@", "node7", "10.1.2.3", "abc@"):
             self.assertNotIn(bad, out)
+
+    def test_a_public_term_is_not_scrubbed_even_when_it_is_the_ssh_alias(self):
+        env = {"HARNESS_GPU_SSH": "gpu", "HARNESS_PRIVATE_TERMS": "benchacct", "HARNESS_PUBLIC_TERMS": "GPU"}
+        text = "gpu column: Tesla V100 on benchacct"
+        self.assertEqual(scrub(text, env), "gpu column: Tesla V100 on <redacted>")
+        self.assertEqual(private_hits("gpu,tok_s", env), [])
+        self.assertEqual(private_hits("gpu,tok_s", {"HARNESS_GPU_SSH": "gpu"}), ["private term"])
 
     def test_secret_tokens_are_removed_anywhere(self):
         text = ("token ghp_abcdefghijklmnop1234 and github_pat_11ABCDEF_xyz and sk-proj-abcdefghijklmnop "

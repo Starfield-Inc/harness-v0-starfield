@@ -204,6 +204,11 @@ class PageTests(unittest.TestCase):
         self.assertEqual(scan_added_lines("+++ b/x\n+file at /Users/someone/x", {}), ["/Users/", "local path"])
         self.assertEqual(scan_added_lines(" /Users/context line not added", {}), [])
 
+    def test_privacy_scan_ignores_an_alias_the_job_left_out_as_public(self):
+        diff = "+gpu,tok_s\n+Tesla V100-SXM3-32GB,200"
+        self.assertEqual(scan_added_lines(diff, {"HARNESS_GPU_SSH": "gpu"}), ["private term"])
+        self.assertEqual(scan_added_lines(diff, {"HARNESS_GPU_SSH": "gpu", "HARNESS_PUBLIC_TERMS": "gpu"}), [])
+
 
 class BodyTests(unittest.TestCase):
     def test_draft_body_says_so_at_the_top_and_lists_flags(self):

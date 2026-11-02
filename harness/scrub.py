@@ -64,6 +64,9 @@ def _terms(env):
     """A pattern for the private terms as whole tokens (no letter or digit right before or after), or None."""
     values = {v for k in SECRET_KEYS for v in [env.get(k, "").strip()] if len(v) >= 3}
     values |= {t.strip() for t in env.get("HARNESS_PRIVATE_TERMS", "").split(",") if len(t.strip()) >= 3}
+    # words the job found in the public repository: scrubbing them would hit every day's real data
+    public = {t.strip().lower() for t in env.get("HARNESS_PUBLIC_TERMS", "").split(",")}
+    values = {v for v in values if v.lower() not in public}
     if not values:
         return None
     alts = "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
