@@ -329,5 +329,59 @@ class RealFiles(unittest.TestCase):
         self.assertEqual(example.read_text(encoding="utf-8"), expected)
 
 
+
+CARRIED_HOW_READ = "Carried forward from the 2026-10-30 read, no longer on the provider's page"
+
+
+def carried_sheet(path, day, carried_models, read_rows):
+    """A sheet with rows read today and rows carried forward from the 30 Oct read."""
+    import csv
+    with Path(path).open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, lineterminator="\n")
+        w.writerow(price_table.COLUMNS)
+        for provider, model, i, o in read_rows:
+            w.writerow([day, provider, model, i, o, "USD per 1M tokens", "https://x.test", "none", "RAW",
+                        f"published by {provider}"])
+        for model, i, o in carried_models:
+            w.writerow([day, "Mistral", model, i, o, "USD per 1M tokens", "https://x.test", "none",
+                        CARRIED_HOW_READ, f"published by Mistral, not on the page on {day}"])
+    return path
+
+
+class CarriedRowTests(Case):
+    READ = [("A", "m1", 2, 10), ("B", "m2", 0.1, 0.5), ("Mistral", "Mistral Small 4", 0.15, 0.6)]
+    CARRIED = [("Mistral Large 3", 0.5, 1.5), ("Mistral Medium 3.5", 1.5, 7.5)]
+
+    def table(self, carried, previous=True):
+        today = carried_sheet(self.dir / "today.csv", "2026-11-02", carried, self.READ)
+        prev = None
+        if previous:
+            prev = carried_sheet(self.dir / "prev.csv", "2026-10-30", [], self.READ + [
+                ("Mistral", m, i, o) for m, i, o in self.CARRIED])
+        return price_table.build_table(today, prev, self.config)
+
+    def test_carried_rows_show_their_price_and_where_it_comes_from(self):
+        text = self.table(self.CARRIED)
+        self.assertIn("| Mistral | Mistral Large 3 | $0.50 | $1.50 | carried forward from 30 Oct 2026 "
+                      "| published by Mistral, not on the page on 2026-11-02 |", text)
+        self.assertIn("| Mistral | Mistral Medium 3.5 | $1.50 | $7.50 | carried forward from 30 Oct 2026 ", text)
+        self.assertIn("| Mistral | Mistral Small 4 | $0.15 | $0.60 | no change | published by Mistral |", text)
+        self.assertTrue(text.endswith(
+            "\n\nMistral Large 3 and Mistral Medium 3.5 are no longer on Mistral's pricing page. "
+            "The prices shown are the ones read on 30 Oct 2026.\n"), text)
+
+    def test_one_carried_row_gets_a_singular_note(self):
+        text = self.table(self.CARRIED[:1])
+        self.assertIn("Mistral Large 3 is no longer on Mistral's pricing page. "
+                      "The price shown is the one read on 30 Oct 2026.", text)
+
+    def test_carried_row_says_so_even_without_a_previous_file(self):
+        self.assertIn("| Mistral Large 3 | $0.50 | $1.50 | carried forward from 30 Oct 2026 |",
+                      self.table(self.CARRIED, previous=False))
+
+    def test_sheet_without_carried_rows_has_no_note(self):
+        self.assertNotIn("no longer on", self.table([]))
+
+
 if __name__ == "__main__":
     unittest.main()

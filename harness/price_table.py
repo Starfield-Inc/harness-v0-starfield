@@ -8,6 +8,8 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from harness.price_reader import carried_from
+
 COLUMNS = [
     "read_date", "provider", "model", "input_usd_per_1m", "output_usd_per_1m", "unit",
     "source_url", "page_date_if_shown", "how_read", "label",
@@ -15,6 +17,8 @@ COLUMNS = [
 MEASURED_LABEL = "measured by Starfield"
 PUBLISHED_PREFIX = "published by "
 STEP_ROW = re.compile(r"^(.+) from (\d{4}-\d{2}-\d{2})$")
+CARRIED_NOTE = re.compile(r".+ (is|are) no longer on .+'s pricing page\. The prices? shown (is|are) the ones? read on .+\.")
+MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 DEFAULT_MAIN_MODELS = Path(__file__).resolve().parent.parent / "prices" / "main-models.json"
 TABLE_HEAD = (
     "| Provider | Model | Input (USD per 1M tokens) | Output (USD per 1M tokens)"
@@ -24,6 +28,14 @@ TABLE_HEAD = (
 
 class PriceTableError(ValueError):
     pass
+
+
+def fmt_day(d):
+    return f"{d.day} {MONTHS[d.month - 1]} {d.year}"
+
+
+def join_words(items):
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def format_price(text):
@@ -91,7 +103,7 @@ def read_sheet(path):
             "provider": rec["provider"], "model": rec["model"],
             "input": parse_price(rec["input_usd_per_1m"], where + " input"),
             "output": parse_price(rec["output_usd_per_1m"], where + " output"),
-            "label": label,
+            "label": label, "carried_from": carried_from(rec["how_read"]),
         })
     return date, rows
 
@@ -120,6 +132,8 @@ def split_steps(rows, path_name):
 
 
 def change_text(row, before):
+    if row["carried_from"]:
+        return f"carried forward from {fmt_day(datetime.date.fromisoformat(row['carried_from']))}"
     if before is None:
         return "new"
     parts = []
@@ -147,6 +161,21 @@ def step_note(step):
             f"The price in the table is the price until {m.group(2)}.")
 
 
+def carried_notes(rows):
+    """One sentence per provider and earlier read for the rows no longer on the provider's page."""
+    groups = {}
+    for r in rows:
+        if r["carried_from"]:
+            groups.setdefault((r["provider"], r["carried_from"]), []).append(r["model"])
+    notes = []
+    for (provider, day), models in groups.items():
+        one = len(models) == 1
+        notes.append(f"{join_words(models)} {'is' if one else 'are'} no longer on {provider}'s pricing page. "
+                     f"The {'price shown is the one' if one else 'prices shown are the ones'} read on "
+                     f"{fmt_day(datetime.date.fromisoformat(day))}.")
+    return notes
+
+
 def section(title, rows, steps, before, has_previous):
     lines = [f"## {title}", ""]
     if not rows:
@@ -155,14 +184,15 @@ def section(title, rows, steps, before, has_previous):
     lines.append(TABLE_HEAD)
     for r in rows:
         key = (r["provider"], r["model"])
-        lines.append(table_row(r, change_text(r, before.get(key)) if has_previous else "first read"))
+        change = change_text(r, before.get(key)) if has_previous or r["carried_from"] else "first read"
+        lines.append(table_row(r, change))
     for r in rows:
         for step in steps.get((r["provider"], r["model"]), []):
             lines += ["", step_note(step)]
     return lines
 
 
-def build_table(today_path, previous_path=None, main_models_path=DEFAULT_MAIN_MODELS):
+def build_table(today_path, previous_path=None, main_models_path=DEFAULT_MAIN_MODELS, with_carried_notes=True):
     today, today_rows = read_sheet(today_path)
     previous_rows, previous = [], None
     if previous_path is not None:
@@ -198,6 +228,9 @@ def build_table(today_path, previous_path=None, main_models_path=DEFAULT_MAIN_MO
             if (r["provider"], r["model"]) not in by_key]
     if gone:
         lines += ["", f"Not read today: {', '.join(gone)}."]
+    if with_carried_notes:
+        for note in carried_notes(models):
+            lines += ["", note]
     return "\n".join(lines) + "\n"
 
 

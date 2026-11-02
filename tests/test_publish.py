@@ -210,6 +210,52 @@ class PageTests(unittest.TestCase):
         self.assertEqual(scan_added_lines(diff, {"HARNESS_GPU_SSH": "gpu", "HARNESS_PUBLIC_TERMS": "gpu"}), [])
 
 
+CARRIED_NOTE = ("- Mistral Large 3 and Mistral Medium 3.5 are no longer on Mistral's pricing page. "
+                "The prices shown are the ones read on 30 Oct 2026.")
+
+
+class CarriedPageTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name)
+        self.today, self.prev = d / "price-sheet-2026-11-02.csv", d / "price-sheet-2026-10-30.csv"
+        carried = [("Mistral Large 3", "0.5", "1.5"), ("Mistral Medium 3.5", "1.5", "7.5")]
+        write_sheet(self.prev, DAY, MAIN + OTHER + [("Mistral", m, i, o) for m, i, o in carried])
+        write_sheet(self.today, date(2026, 11, 2), MAIN + OTHER)
+        with self.today.open("a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            for model, i, o in carried:
+                w.writerow(["2026-11-02", "Mistral", model, i, o, "USD per 1M tokens",
+                            "https://docs.mistral.ai/inference/pricing", "none",
+                            "Carried forward from the 2026-10-30 read, no longer on the provider's page",
+                            "published by Mistral, not on the page on 2026-11-02"])
+
+    def page(self, notes=NOTES):
+        return render_price_page(self.today, self.prev, [DAY], notes, "data/prices", SHA_URL)
+
+    def test_page_shows_carried_rows_and_one_note_line(self):
+        text = self.page()
+        self.assertIn("| Mistral | Mistral Large 3 | $0.50 | $1.50 | carried forward from 30 Oct 2026 |", text)
+        self.assertIn(NOTES + "\n" + CARRIED_NOTE + "\n\n## Data", text)
+        self.assertEqual(text.count("no longer on Mistral's pricing page"), 1)
+        self.assertIn("No price changed since the 30 Oct 2026 read.", text)
+        self.assertEqual(compare_page_to_sheet(text, self.today, self.prev), [])
+
+    def test_notes_copied_from_the_previous_page_do_not_repeat_the_carried_note(self):
+        copied = notes_from_page(self.page())
+        self.assertEqual(self.page(copied), self.page())
+
+    def test_carried_note_leaves_the_notes_once_the_rows_are_gone(self):
+        write_sheet(self.today, date(2026, 11, 2), MAIN + OTHER)
+        self.assertNotIn("no longer on", render_price_page(
+            self.today, self.prev, [DAY], NOTES + "\n" + CARRIED_NOTE, "data/prices", SHA_URL))
+
+    def test_comparison_catches_a_missing_carried_note(self):
+        problems = compare_page_to_sheet(self.page().replace(CARRIED_NOTE, ""), self.today, self.prev)
+        self.assertTrue(any("carried-forward note" in p for p in problems), problems)
+
+
 class BodyTests(unittest.TestCase):
     def test_draft_body_says_so_at_the_top_and_lists_flags(self):
         checks = [Check("a", PASS, "ok"), Check("b", FAIL, "broke"), Check("c", FLAG, "look at this")]

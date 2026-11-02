@@ -23,15 +23,15 @@ from harness.checks import FAIL, FLAG, PASS, Check, is_draft, render_markdown
 from harness.checks.runs import PRIVACY_PATTERNS
 from harness.daily_types import GpuResult, PriceResult, PublishResult, is_dry_run
 from harness.scrub import private_hits, scrub
-from harness.price_table import (DEFAULT_MAIN_MODELS, build_table, change_text, load_main_models,
-                                 read_sheet, split_steps, step_note)
+from harness.price_table import (CARRIED_NOTE, DEFAULT_MAIN_MODELS, build_table, carried_notes, change_text,
+                                 fmt_day, load_main_models, read_sheet, split_steps, step_note)
+from harness.price_table import join_words as _join
 
 AUTHOR = ["-c", "user.name=esteban657", "-c", "user.email=344872025+esteban657@users.noreply.github.com"]
 FF_MERGE = ["git", "merge", "--ff-only", "origin/main"]
 NOT_PUSHED = "Data was not pushed to the public repository because checks failed."
 LONG_COMMANDS = (["npm", "ci"], ["npm", "test"])
 SCRIPT_READS_FROM = date(2026, 10, 28)
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
 DEFAULT_NOTES = (
     "- Hosts that resell a model can charge more than the maker. Each row names the provider that published its price.\n"
@@ -109,14 +109,6 @@ def _tail(text, limit=300):
     return text[-limit:].replace("\n", " ")
 
 
-def fmt_day(d):
-    return f"{d.day} {MONTHS[d.month - 1]} {d.year}"
-
-
-def _join(items):
-    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
-
-
 def _require(env, key):
     if not env.get(key):
         raise PublishError(f"env {key} is not set")
@@ -156,8 +148,8 @@ def price_changes(today_sheet, previous_sheet):
     today, _ = split_steps(today_rows, str(today_sheet))
     prev, _ = split_steps(prev_rows, str(previous_sheet))
     before = {(r["provider"], r["model"]): r for r in prev}
-    out = [f"{r['provider']} {r['model']}: {c}" for r in today
-           if (c := change_text(r, before.get((r["provider"], r["model"])))) != "no change"]
+    out = [f"{r['provider']} {r['model']}: {c}" for r in today if not r["carried_from"]
+           and (c := change_text(r, before.get((r["provider"], r["model"])))) != "no change"]
     now = {(r["provider"], r["model"]) for r in today}
     out += [f"{r['provider']} {r['model']}: not read today" for r in prev if (r["provider"], r["model"]) not in now]
     return out
@@ -221,6 +213,13 @@ def notes_from_page(page_text):
     return m.group(1) if m else None
 
 
+def _notes_with_carried(notes, today_sheet):
+    """The copied notes with yesterday's carried-forward lines replaced by today's."""
+    _, rows = read_sheet(today_sheet)
+    lines = [line for line in notes.split("\n") if not CARRIED_NOTE.fullmatch(line.removeprefix("- "))]
+    return "\n".join(lines + [f"- {note}" for note in carried_notes(rows)])
+
+
 def render_price_page(today_sheet, previous_sheet, scripted_days, notes, sheet_repo_dir,
                       harness_repo_url, main_models=DEFAULT_MAIN_MODELS):
     """The day's price page, in the wording of the 30 Oct 2026 page. Numbers come from the two sheets only."""
@@ -228,7 +227,7 @@ def render_price_page(today_sheet, previous_sheet, scripted_days, notes, sheet_r
     prev, _ = read_sheet(previous_sheet)
     t, p, iso = fmt_day(today), fmt_day(prev), today.isoformat()
     changes = price_changes(today_sheet, previous_sheet)
-    body = build_table(today_sheet, previous_sheet, main_models).split("\n", 2)[2]
+    body = build_table(today_sheet, previous_sheet, main_models, with_carried_notes=False).split("\n", 2)[2]
     body = _add_captions(body, t, p, len(load_main_models(main_models))).rstrip("\n")
     tables = parse_page_tables(body)
     n_main, n_other = len(tables.get("Main models", [])), len(tables.get("All other models", []))
@@ -257,7 +256,7 @@ These are standard short-prompt prices only. Prices from different dates never s
 
 ## Notes
 
-{notes}
+{_notes_with_carried(notes, today_sheet)}
 
 ## Data
 
@@ -293,6 +292,7 @@ def compare_page_to_sheet(page_text, today_sheet, previous_sheet, main_models=DE
                 if len(g) != 6 or g[i] != w[i]:
                     problems.append(f"{section}: {w[0]} {w[1]} {col} is '{g[i] if len(g) == 6 else g}' on the page, '{w[i]}' in the sheet")
         problems += [f"{section}: {k[0]} {k[1]} is on the page but not in the sheet" for k in got]
+    problems += [f"missing carried-forward note: {n}" for n in carried_notes(models) if n not in page_text]
     for step_list in steps.values():
         problems += [f"missing step note: {step_note(s)}" for s in step_list if step_note(s) not in page_text]
     if not price_changes(today_sheet, previous_sheet) and "No price changed since" not in page_text:
