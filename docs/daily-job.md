@@ -86,9 +86,9 @@ Everything the job prints also goes through the scrub. This includes check detai
 
 Each command the publish step runs stops after 900 seconds. `npm ci` and `npm test` get 1800 seconds. The check that the harness commit is public stops after 30 seconds.
 
-The lock file holds the process ID of the run that owns it and the start time of that process, as `ps -o lstart=` prints it. A new run takes over a lock only when the lock is older than 6 hours and its owner is no longer running. An owner counts as not running when its process ID is gone, or when a process with that ID has a different start time, because the system gave the ID to a new process.
+The lock is an `flock` on the file `harness-daily-<repo folder name>.lock` in `HARNESS_DAILY_LOCK_DIR`. Only one process at a time can hold it. The system releases it when the run ends, also when the run crashes or is killed, so a lock is never left behind and no run ever takes over another run's lock. If another run holds the lock, the job does not start, and the report says which process holds it.
 
-To take over, the job writes its own lock to a temporary file in the same folder. It moves that file over the old lock only if the old lock still holds the same text. If another run changed the lock first, the job does not start. A run removes the lock at the end only if the lock still holds its own text.
+While a run holds the lock, the file holds the process ID of that run and the start time of the process, as `ps -o lstart=` prints it. This text only says who holds the lock. It does not decide anything. At the end, the run empties the file. The job never deletes the file, because a run could otherwise lock a file that another run had just deleted, and both runs would start.
 
 ## Review and merge
 

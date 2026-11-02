@@ -17,8 +17,8 @@ if __name__ == "__main__":
     # with local paths to the launchd error log. main() catches every Exception itself.
     sys.excepthook = lambda kind, value, tb: print(f"harness.daily stopped: {kind.__name__}", file=sys.stderr)
 
+import fcntl
 import tempfile
-import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -28,7 +28,6 @@ from harness.daily_types import PriceResult, is_dry_run
 from harness.publish import run_command, write_report
 from harness.scrub import scrub
 
-STALE_LOCK_SECONDS = 6 * 3600
 DEFAULT_USERS = {"root", "ubuntu", "admin", "user"}
 
 
@@ -40,37 +39,12 @@ def utc_today() -> date:
     return datetime.now(timezone.utc).date()
 
 
-def _pid_running(pid) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
 def _start_time(pid, runner):
     try:
         res = runner(["ps", "-o", "lstart=", "-p", str(pid)])
     except Exception:
         return None
     return res.stdout.strip() if res.returncode == 0 and res.stdout.strip() else None
-
-
-def _owner_alive(content, runner) -> bool:
-    """The lock holds a PID and the start time of that process. A reused PID has another start time."""
-    lines = content.split("\n")
-    try:
-        pid = int(lines[0].strip())
-    except ValueError:
-        return False
-    if pid <= 0 or not _pid_running(pid):
-        return False
-    recorded = lines[1].strip() if len(lines) > 1 else ""
-    now = _start_time(pid, runner)
-    # When ps gives no answer for a running process, the owner may still be alive.
-    return not recorded or now is None or now == recorded
 
 
 def load_env(environ) -> dict:
@@ -87,6 +61,10 @@ def load_env(environ) -> dict:
 
 
 class Lock:
+    """An flock on the lock file. The kernel drops it when the holder ends, however it ends, so no stale
+    lock is ever left to take over. The file is never deleted, because a run could otherwise lock a file
+    that another run had just deleted. The text (PID and start time) only tells a blocked run who holds it."""
+
     def __init__(self, repo: Path, env: dict, runner=run_command):
         folder = Path(env.get("HARNESS_DAILY_LOCK_DIR") or tempfile.gettempdir())
         try:
@@ -95,57 +73,27 @@ class Lock:
             folder = Path(tempfile.gettempdir())
         self.path = folder / f"harness-daily-{Path(repo).resolve().name}.lock"
         self.runner = runner
-        self.content = None
 
     def _mine(self):
         return f"{os.getpid()}\n{_start_time(os.getpid(), self.runner) or ''}\n"
 
     def __enter__(self):
-        for _ in range(2):
-            try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                try:
-                    stale = self.path.read_text(encoding="utf-8")
-                    age = time.time() - self.path.stat().st_mtime
-                except FileNotFoundError:
-                    continue
-                if age <= STALE_LOCK_SECONDS or _owner_alive(stale, self.runner):
-                    raise LockHeld(f"another run holds {self.path}")
-                self._take_over(stale)
-                return self
-            self.content = self._mine()
-            with os.fdopen(fd, "w") as f:
-                f.write(self.content)
-            return self
-        raise LockHeld(f"could not take {self.path}")
-
-    def _take_over(self, stale):
-        """Replace the stale lock only if no other run replaced it first."""
-        mine = self._mine()
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + ".")
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            with os.fdopen(fd, "w") as f:
-                f.write(mine)
-            try:
-                current = self.path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                current = None
-            if current != stale:
-                raise LockHeld(f"another run holds {self.path}")
-            os.replace(tmp, self.path)
-        finally:
-            Path(tmp).unlink(missing_ok=True)
-        if self.path.read_text(encoding="utf-8") != mine:
-            raise LockHeld(f"another run holds {self.path}")
-        self.content = mine
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            holder = os.read(fd, 200).decode("utf-8", "replace").splitlines()
+            os.close(fd)
+            who = f" (process {holder[0]}, started {holder[1]})" if len(holder) > 1 else ""
+            raise LockHeld(f"another run holds {self.path}{who}")
+        os.ftruncate(fd, 0)
+        os.write(fd, self._mine().encode())
+        self.fd = fd
+        return self
 
     def __exit__(self, *exc):
-        try:
-            if self.path.read_text(encoding="utf-8") == self.content:
-                self.path.unlink(missing_ok=True)
-        except FileNotFoundError:
-            pass
+        os.ftruncate(self.fd, 0)
+        os.close(self.fd)
 
 
 def ssh_terms(ssh_config: str) -> list[str]:
