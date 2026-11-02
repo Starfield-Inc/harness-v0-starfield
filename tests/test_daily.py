@@ -33,9 +33,13 @@ class Case(unittest.TestCase):
         (self.repo / "data" / "prices" / "price-sheet-2026-10-30.csv").write_text(sheet_text("2026-10-30"))
         self.lockdir = root / "locks"
         self.lockdir.mkdir()
-        self.environ = {"HARNESS_DAILY_LOCK_DIR": str(self.lockdir)}
+        self.logdir = root / "logs"
+        self.environ = {"HARNESS_DAILY_LOCK_DIR": str(self.lockdir), "HARNESS_DAILY_LOG_DIR": str(self.logdir)}
         self.calls = []
         self.root = root
+        self.runs = []
+        self.ssh_g = None
+        self.on_ps = None
         today = mock.patch.object(daily, "utc_today", return_value=DAY)
         today.start()
         self.addCleanup(today.stop)
@@ -64,10 +68,30 @@ class Case(unittest.TestCase):
         self.published_with = (price_result, gpu_result, env)
         return PublishResult("abc123", ["https://github.com/o/r/pull/1"], False)
 
+    def runner(self, argv, cwd=None, env=None):
+        """Records every command. ps runs for real so the lock can read process start times."""
+        self.runs.append(list(argv))
+        if argv[0] == "ps":
+            if self.on_ps:
+                self.on_ps(argv)
+            return subprocess.run(argv, capture_output=True, text=True)
+        if argv[:2] == ["ssh", "-G"]:
+            if self.ssh_g is None:
+                return subprocess.CompletedProcess(argv, 255, "", "ssh: no config")
+            return subprocess.CompletedProcess(argv, 0, self.ssh_g, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def notifications(self):
+        return [a for a in self.runs if a[0] == "osascript"]
+
+    def report(self):
+        return (self.logdir / f"harness-daily-{DAY}.log").read_text()
+
     def main(self, *args, **fakes):
         fakes.setdefault("read_pages", self.reader)
         fakes.setdefault("gpu", self.gpu)
         fakes.setdefault("publish", self.publish)
+        fakes.setdefault("runner", self.runner)
         out = io.StringIO()
         code = daily.main(["--date", str(DAY), "--repo", str(self.repo), *args],
                           out=out, environ=self.environ, fakes=fakes)
@@ -134,7 +158,8 @@ class TestRun(Case):
         with mock.patch.object(daily, "utc_today", REAL_UTC_TODAY), \
                 mock.patch.object(daily, "datetime", mock.Mock(now=now)):
             daily.main(["--repo", str(self.repo)], out=io.StringIO(), environ=self.environ,
-                       fakes={"read_pages": self.reader, "gpu": self.gpu, "publish": self.publish})
+                       fakes={"read_pages": self.reader, "gpu": self.gpu, "publish": self.publish,
+                              "runner": self.runner})
         self.assertEqual(self.published_with[0].day, date(2026, 11, 2))
         self.assertEqual(self.calls[0], "read")
 
@@ -153,6 +178,56 @@ class TestRun(Case):
         code, out = self.main(publish=lambda *a: PublishResult("", [], False, "dry run: would push nothing"))
         self.assertIn("dry run: would push nothing", out)
         self.assertEqual(code, 1)
+
+    def test_step_exception_writes_the_local_report_and_notifies(self):
+        def boom(day, repo, env):
+            raise RuntimeError("ssh to /srv/remote/box failed")
+        code, out = self.main(gpu=boom)
+        report = self.report()
+        self.assertIn("| gpu step | FAIL |", report)
+        self.assertNotIn("/srv/remote", report)
+        self.assertNotIn("/srv/remote", out)
+        self.assertEqual(len(self.notifications()), 1)
+
+    def test_no_report_or_notification_on_a_clean_run(self):
+        self.main()
+        self.assertFalse(self.logdir.exists())
+        self.assertEqual(self.notifications(), [])
+
+    def test_everything_printed_is_scrubbed(self):
+        self.environ["HARNESS_PRIVATE_TERMS"] = "benchacct"
+        def gpu(day, repo, env):
+            return GpuResult(day, [], None, [Check("gpu runs", FAIL, "benchacct copy to /srv/remote/out failed")])
+        code, out = self.main(gpu=gpu, publish=lambda *a: PublishResult(
+            "", [], True, f"No pull request was opened. The report is in {self.logdir}/x.log"))
+        for secret in ("benchacct", "/srv/remote", str(self.logdir), str(self.root)):
+            self.assertNotIn(secret, out)
+
+    def test_ssh_alias_details_become_private_terms(self):
+        self.environ.update({"HARNESS_GPU_SSH": "gpubox", "HARNESS_PRIVATE_TERMS": "existing-term"})
+        self.ssh_g = ("user benchacct\nhostname gpu-7.cluster.example.org\nport 2201\n"
+                      "identityfile ~/.ssh/bench_key\nforwardagent no\n")
+        seen = {}
+        def gpu(day, repo, env):
+            seen["terms"] = env["HARNESS_PRIVATE_TERMS"].split(",")
+            return GpuResult(day, [], None, [Check("gpu runs", FAIL, "benchacct on port 2201 refused")])
+        code, out = self.main(gpu=gpu)
+        self.assertIn(["ssh", "-G", "gpubox"], self.runs)
+        self.assertEqual(seen["terms"], ["existing-term", "benchacct", "gpu-7.cluster.example.org", "2201",
+                                         "~/.ssh/bench_key"])
+        self.assertEqual(self.published_with[2]["HARNESS_PRIVATE_TERMS"].split(",")[1], "benchacct")
+        self.assertNotIn("benchacct", out)
+        self.assertNotIn("2201", out)
+
+    def test_parse_ssh_config_skips_the_default_port(self):
+        self.assertEqual(daily.ssh_terms("user u1x\nport 22\nhostname h.example.com\nidentityfile ~/.ssh/id_rsa\n"),
+                         ["u1x", "h.example.com", "~/.ssh/id_rsa"])
+
+    def test_ssh_config_failure_does_not_stop_the_run(self):
+        self.environ["HARNESS_GPU_SSH"] = "gpubox"
+        code, _ = self.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls, ["read", "gpu", "publish"])
 
     def test_existing_sheet_is_already_done(self):
         (self.repo / "data" / "prices" / f"price-sheet-{DAY}.csv").write_text(sheet_text(DAY))
@@ -226,6 +301,53 @@ class TestLock(Case):
         code, out = self.main()
         self.assertEqual(code, 1)
         self.assertEqual(self.calls, [])
+
+    def test_a_blocked_run_writes_the_report_and_notifies(self):
+        daily.Lock(self.repo, self.environ).path.write_text("1\n")
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertIn("another run holds", self.report())
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertNotIn(str(self.lockdir), out)
+        self.assertNotIn(str(self.lockdir), self.report())
+
+    def start_time(self, pid):
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+
+    def test_lock_records_pid_and_start_time(self):
+        lock = daily.Lock(self.repo, self.environ).path
+        seen = {}
+        def gpu(day, repo, env):
+            seen["lock"] = lock.read_text()
+            return self.gpu(day, repo, env)
+        self.main(gpu=gpu)
+        self.assertEqual(seen["lock"], f"{os.getpid()}\n{self.start_time(os.getpid())}\n")
+
+    def test_old_lock_of_a_live_process_with_its_start_time_blocks(self):
+        self.old_lock(f"{os.getpid()}\n{self.start_time(os.getpid())}")
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls, [])
+
+    def test_old_lock_of_a_reused_pid_is_taken(self):
+        self.old_lock(f"{os.getpid()}\nMon Jan  1 00:00:00 2001")
+        code, _ = self.main()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.calls, ["read", "gpu", "publish"])
+
+    def test_takeover_loses_to_a_run_that_took_the_lock_first(self):
+        lock = daily.Lock(self.repo, self.environ).path
+        self.old_lock(f"{os.getpid()}\nMon Jan  1 00:00:00 2001")
+        def other_run_takes_it(argv):
+            # The first ps call is the check of the stale owner; the other run takes the lock right then.
+            if not self.runs[:-1] or all(a[0] != "ps" for a in self.runs[:-1]):
+                lock.write_text("4000000\nTue Nov  3 06:00:00 2026\n")
+        self.on_ps = other_run_takes_it
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(lock.read_text(), "4000000\nTue Nov  3 06:00:00 2026\n")
+        self.assertEqual(sorted(p.name for p in self.lockdir.iterdir()), [lock.name])
 
 
 class TestEnv(Case):

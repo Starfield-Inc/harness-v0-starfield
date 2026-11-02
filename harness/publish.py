@@ -306,19 +306,30 @@ def _safe_body(summary, harness_sha, harness_url, checks, pushed, env):
     return body, checks
 
 
-def _report_locally(day, summary, checks, env, runner):
-    """No pull request could be opened: keep the report on this machine and tell the person at the desk."""
-    text = scrub("\n".join([*summary, "No pull request was opened.", "", render_markdown(checks), ""]), env)
+def write_report(day, text, env, runner, message):
+    """Keep the scrubbed report on this machine and tell the person at the desk. Returns the scrubbed text."""
+    text = scrub(text, env)
+    name = f"harness-daily-{day.isoformat()}.log"
     folder = Path(env.get("HARNESS_DAILY_LOG_DIR") or tempfile.gettempdir())
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"harness-daily-{day.isoformat()}.log"
-    path.write_text(text, encoding="utf-8")
-    message = f"No pull request was opened for {fmt_day(day)}. The report is in {path.name}."
+    (folder / name).write_text(text, encoding="utf-8")
     try:
-        runner(["osascript", "-e", f'display notification "{message}" with title "Harness daily job"'])
+        runner(["osascript", "-e", f'display notification "{message} The report is in {name}." '
+                                   'with title "Harness daily job"'])
     except Exception:
         pass
-    return PublishResult("", [], is_draft(checks), f"{text}\nThe report is in {path}.\n")
+    return f"{text}\nThe report is in {name} in the log folder (HARNESS_DAILY_LOG_DIR).\n"
+
+
+def _public_line(pushed_sha):
+    return [f"The data is already public: harness commit {pushed_sha} was pushed to main."] if pushed_sha else []
+
+
+def _report_locally(day, summary, checks, env, runner, pushed_sha=""):
+    """No pull request could be opened: keep the report on this machine."""
+    text = "\n".join([*summary, *_public_line(pushed_sha), "No pull request was opened.", "", render_markdown(checks), ""])
+    text = write_report(day, text, env, runner, f"No pull request was opened for {fmt_day(day)}.")
+    return PublishResult(pushed_sha, [], is_draft(checks), text)
 
 
 def _dry_run_text(day, price_result, gpu_result, checks, env):
