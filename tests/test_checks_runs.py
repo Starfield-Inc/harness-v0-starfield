@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from harness.checks import FAIL, FLAG, PASS
-from harness.checks.runs import check_runs
+from harness.checks.runs import check_one_run_per_model, check_runs
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL = "Org/Model-1"
@@ -233,6 +233,38 @@ class RealFilesTest(unittest.TestCase):
         self.assertTrue(runs)
         bad = [c for c in check_runs(runs, self.expected(), []) if c.name.startswith("privacy") and c.status != PASS]
         self.assertEqual(bad, [])
+
+
+class OneRunPerModelTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def run_for(self, model, name):
+        folder = self.dir / name
+        folder.mkdir()
+        return write_run(folder, rows=[dict(GOOD_ROW, model_hf_id=model, repeat_index=1)])
+
+    def test_one_run_each_passes(self):
+        csvs = [self.run_for(MODEL, "a"), self.run_for("Org/Model-2", "b")]
+        self.assertEqual(check_one_run_per_model(csvs, [MODEL, "Org/Model-2"]).status, PASS)
+
+    def test_doubled_and_missing_model_fails(self):
+        csvs = [self.run_for(MODEL, "a"), self.run_for(MODEL, "b")]
+        check = check_one_run_per_model(csvs, [MODEL, "Org/Model-2"])
+        self.assertEqual(check.status, FAIL)
+        self.assertIn(f"{MODEL} has 2 runs", check.detail)
+        self.assertIn("Org/Model-2 has 0 runs", check.detail)
+
+    def test_run_of_unknown_model_fails(self):
+        check = check_one_run_per_model([self.run_for("Org/Other", "a")], [])
+        self.assertEqual(check.status, FAIL)
+        self.assertIn("Org/Other", check.detail)
+
+    def test_unreadable_run_fails(self):
+        check = check_one_run_per_model([self.dir / "vllm-missing.csv"], [MODEL])
+        self.assertEqual(check.status, FAIL)
 
 
 if __name__ == "__main__":

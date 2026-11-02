@@ -183,6 +183,19 @@ def _read_previous(paths):
     return rows, checks
 
 
+def check_one_run_per_model(run_csvs, model_ids) -> Check:
+    """Counts runs by the model id in the csv rows, so a doubled model and a missing one cannot cancel out."""
+    runs = [_load(p) for p in run_csvs]
+    problems = [r.error for r in runs if r.error]
+    counts = {m: 0 for m in model_ids}
+    for r in runs:
+        if not r.error:
+            counts[r.model] = counts.get(r.model, 0) + 1
+    problems += [f"{m} has {n} runs" for m, n in counts.items() if n != 1]
+    problems += [f"{m} is not a configured model" for m in counts if m not in model_ids]
+    return Check("one run per model", *_verdict(problems, f"one run for each of {len(model_ids)} models"))
+
+
 def check_runs(run_csvs, expected, previous_summaries):
     previous, checks = _read_previous(previous_summaries)
     for csv_path in run_csvs:
