@@ -619,6 +619,14 @@ class ScriptRunTest(unittest.TestCase):
         self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, 9))
         return proc
 
+    def child(self):
+        # the guard alone can take seconds on a busy machine
+        for _ in range(400):
+            if self.child_pid.exists() and self.child_pid.read_text().strip():
+                return int(self.child_pid.read_text())
+            time.sleep(0.05)
+        self.fail("the fake model run never started")
+
     def gone(self, pid):
         for _ in range(50):
             try:
@@ -637,11 +645,7 @@ class ScriptRunTest(unittest.TestCase):
 
     def test_stop_step_ends_a_running_job_and_logs_stop(self):
         job = self.start(["bash", str(self.script)], HOLD="1")
-        for _ in range(100):
-            if self.child_pid.exists() and self.child_pid.read_text().strip():
-                break
-            time.sleep(0.05)
-        pid = int(self.child_pid.read_text())
+        pid = self.child()
         self.addCleanup(lambda: self.gone(pid) or os.kill(pid, 9))
         subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]], check=True)
         job.wait(timeout=10)
@@ -652,11 +656,7 @@ class ScriptRunTest(unittest.TestCase):
 
     def test_cleanup_kills_a_process_that_ignores_term(self):
         job = self.start(["bash", str(self.script)], HOLD="1", IGNORE_TERM="1")
-        for _ in range(100):
-            if self.child_pid.exists() and self.child_pid.read_text().strip():
-                break
-            time.sleep(0.05)
-        pid = int(self.child_pid.read_text())
+        pid = self.child()
         self.addCleanup(lambda: self.gone(pid) or os.kill(pid, 9))
         subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]], check=True)
         time.sleep(1)
