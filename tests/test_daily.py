@@ -1,3 +1,4 @@
+import errno
 import io
 import os
 import plistlib
@@ -322,6 +323,26 @@ class TestLock(Case):
         self.addCleanup(child.stdin.close)
         self.assertEqual(child.stdout.readline().strip(), "held")
         return child
+
+    def test_a_lock_folder_that_cannot_be_made_stops_the_run_with_a_report(self):
+        blocker = self.root / "file"
+        blocker.write_text("x")
+        self.environ["HARNESS_DAILY_LOCK_DIR"] = str(blocker / "locks")
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls, [])
+        self.assertIn("cannot make the lock folder", self.report())
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertNotIn(str(self.root), out + self.report())
+
+    def test_a_file_system_without_flock_stops_the_run_with_a_report(self):
+        with mock.patch.object(daily.fcntl, "flock", side_effect=OSError(errno.ENOLCK, "No locks available")):
+            code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.calls, [])
+        self.assertIn("cannot lock", self.report())
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertNotIn(str(self.root), out + self.report())
 
     def test_a_blocked_run_writes_the_report_and_notifies(self):
         child = self.hold_lock_in_another_process()

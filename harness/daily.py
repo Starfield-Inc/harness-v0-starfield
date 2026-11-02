@@ -31,7 +31,11 @@ from harness.scrub import scrub
 DEFAULT_USERS = {"root", "ubuntu", "admin", "user"}
 
 
-class LockHeld(Exception):
+class LockError(Exception):
+    """The run cannot take the lock, so it must not start."""
+
+
+class LockHeld(LockError):
     pass
 
 
@@ -69,8 +73,9 @@ class Lock:
         folder = Path(env.get("HARNESS_DAILY_LOCK_DIR") or tempfile.gettempdir())
         try:
             folder.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            folder = Path(tempfile.gettempdir())
+        except OSError as e:
+            # no fallback: two runs could then lock two different files
+            raise LockError(f"cannot make the lock folder {folder}: {e}")
         self.path = folder / f"harness-daily-{Path(repo).resolve().name}.lock"
         self.runner = runner
 
@@ -78,7 +83,10 @@ class Lock:
         return f"{os.getpid()}\n{_start_time(os.getpid(), self.runner) or ''}\n"
 
     def __enter__(self):
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        except OSError as e:
+            raise LockError(f"cannot open the lock file {self.path}: {e}")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -86,6 +94,9 @@ class Lock:
             os.close(fd)
             who = f" (process {holder[0]}, started {holder[1]})" if len(holder) > 1 else ""
             raise LockHeld(f"another run holds {self.path}{who}")
+        except OSError as e:
+            os.close(fd)
+            raise LockError(f"cannot lock {self.path}: {e}")
         os.ftruncate(fd, 0)
         os.write(fd, self._mine().encode())
         self.fd = fd
@@ -266,7 +277,7 @@ def _main(argv, out, env, fakes, runner) -> int:
         with Lock(args.repo, env, runner):
             checks, published, crashed = run_day(args.date, args.repo, env, args.skip_gpu,
                                                  args.skip_publish, fakes)
-    except LockHeld as e:
+    except LockError as e:
         text = f"The daily run for {args.date} did not start: {e}."
         say([text])
         write_report(args.date, text + "\n", env, runner, f"The {args.date} run did not start.")
