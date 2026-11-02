@@ -172,9 +172,9 @@ DATA_PUSH = ["git", "push", "origin", "daily-data-2026-10-30:main"]
 PR_URL = "https://github.com/Starfield-Inc/starfield-website/pull/99"
 
 
-def own_pr(url, draft, fork=False):
+def own_pr(url, draft, fork=False, state="OPEN"):
     """One entry of `gh pr list --json`, as gh prints it."""
-    return {"number": int(url.rsplit("/", 1)[1]), "url": url, "isDraft": draft, "isCrossRepository": fork,
+    return {"number": int(url.rsplit("/", 1)[1]), "url": url, "isDraft": draft, "state": state, "isCrossRepository": fork,
             "headRepositoryOwner": {"login": "someone" if fork else "Starfield-Inc"}, "headRefName": "daily-2026-10-30"}
 
 
@@ -753,8 +753,23 @@ class PublishTests(unittest.TestCase):
         self.assertFalse([a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "ready"]])
         listed = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "list"])
         self.assertEqual(listed[listed.index("--json") + 1],
-                         "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName")
+                         "number,url,isDraft,state,isCrossRepository,headRepositoryOwner,headRefName")
         self.assertIn(f"Ignored the pull request {fork} from another repository", self.body())
+
+    def test_a_pull_request_closed_without_a_merge_is_not_the_days_pull_request(self):
+        closed = "https://github.com/Starfield-Inc/starfield-website/pull/56"
+        self.fake.pr_list = json.dumps([own_pr(closed, draft=True, state="CLOSED")])
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [PR_URL])
+        self.assertTrue([a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"]])
+        self.assertNotIn(closed, self.body())
+
+    def test_a_merged_pull_request_still_counts_as_done(self):
+        merged = "https://github.com/Starfield-Inc/starfield-website/pull/57"
+        self.fake.pr_list = json.dumps([own_pr(merged, draft=False, state="MERGED")])
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [merged])
+        self.assertFalse([a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"]])
 
     def test_private_text_in_site_files_stops_the_site_push(self):
         self.s.env["HARNESS_PRIVATE_TERMS"] = "benchacct"

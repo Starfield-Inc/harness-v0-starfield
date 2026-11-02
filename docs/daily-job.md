@@ -60,7 +60,7 @@ The GPU step copies the run files back into a staging folder next to the launch 
 
 A second run on the same day is safe. Before it changes anything, the job looks for the day's pull request on the site repository with `gh pr list --head daily-YYYY-MM-DD`. A fork can open a pull request from a branch with the same name, so the job asks gh for `isCrossRepository` and `headRefName`, and uses only a pull request that comes from the site repository itself and from that branch. It ignores every other one, and the pull request text and the report name each one it ignored. It never changes a pull request that is not its own.
 
-If the job's own pull request exists, the job returns it and pushes nothing. It reads the harness commit that the branch's manifest pins and says whether the data was pushed.
+If the job's own pull request exists, the job returns it and pushes nothing. It reads the harness commit that the branch's manifest pins and says whether the data was pushed. A pull request that someone closed without a merge does not count, so closing a bad run lets the next run open a new one. A merged one counts as done.
 
 - If `origin/main` holds that commit, the result says "Harness data pushed" and names the commit.
 - If it does not, the result says "Harness data not pushed" and the pull request stays a draft.

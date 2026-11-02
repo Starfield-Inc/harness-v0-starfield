@@ -394,14 +394,17 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
 # Steps
 # ---------------------------------------------------------------------------------------------
 
-PR_FIELDS = "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName"
+PR_FIELDS = "number,url,isDraft,state,isCrossRepository,headRepositoryOwner,headRefName"
 
 
 def _existing_pr(gh_list_stdout, branch):
     """The job's own pull request for the branch, and the URLs of others with the same branch name.
-    A fork can open a pull request from a branch of the same name, so only one from this repository counts."""
+    A fork can open a pull request from a branch of the same name, so only one from this repository counts.
+    A pull request closed without a merge is dropped, so a person can close a bad run and have the job open a new one."""
     own, others = None, []
     for pr in json.loads(gh_list_stdout or "[]"):
+        if pr.get("state") == "CLOSED":
+            continue
         if pr.get("isCrossRepository") is False and pr.get("headRefName") == branch and own is None:
             own = pr
         else:
