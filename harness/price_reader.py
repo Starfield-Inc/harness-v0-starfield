@@ -119,16 +119,29 @@ def _factor(unit, who):
     return UNIT_FACTORS[unit]
 
 
+def _anchors(model):
+    """A model has one "anchor" or a list of "anchors", one per page layout, tried in order."""
+    return [model["anchor"]] if "anchor" in model else model["anchors"]
+
+
 def _window(source, model, others, who):
+    anchors = _anchors(model)
     base = source.find(model["after"]) if "after" in model else 0
-    start = source.find(model["anchor"], base) if base >= 0 else -1
+    start, anchor = -1, None
+    if base >= 0:
+        for anchor in anchors:
+            start = source.find(anchor, base)
+            if start >= 0:
+                break
     if start < 0:
-        raise PriceReadError(f"{who}: model not found on the page (anchor {model['anchor']!r})")
+        tried = ", ".join(repr(a) for a in anchors)
+        raise PriceReadError(f"{who}: model not found on the page (tried anchors {tried})")
     end = start + model.get("window", DEFAULT_WINDOW)
     for other in others:
-        pos = source.find(other["anchor"], start + len(model["anchor"]))
-        if pos >= 0:
-            end = min(end, pos)
+        for other_anchor in _anchors(other):
+            pos = source.find(other_anchor, start + len(anchor))
+            if pos >= 0:
+                end = min(end, pos)
     return source[start:end]
 
 
@@ -201,6 +214,9 @@ def _read_page(page, raw, read_date):
         if match:
             page_date = _iso_date(_group(match, "date"), provider)
     sources = {"text": text, "html": html.unescape(raw), "markdown": raw}
+    for model in page["models"]:
+        if ("anchor" in model) == ("anchors" in model):
+            raise PriceReadError(f"{provider} / {model['model']}: give either 'anchor' or 'anchors' in the config")
     rows = []
     for model in page["models"]:
         mode = model.get("mode", "text")

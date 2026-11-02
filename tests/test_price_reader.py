@@ -191,6 +191,64 @@ class ParseTests(unittest.TestCase):
         self.assertIn("Acme", str(ctx.exception))
 
 
+def prices(rows):
+    return [(r["model"], r["input_usd_per_1m"], r["output_usd_per_1m"]) for r in rows]
+
+
+def neighbours_config():
+    def model(name):
+        return {"model": name, "mode": "text", "window": 2500,
+                "anchors": [f"{name}\nTry it in Google AI Studio",
+                            f'model={name}" variant="ais" %}}\nTry it in Google AI Studio'],
+                "input": r"Input price[^$]*\$(?P<value>[\d.]+)",
+                "output": r"Output price[^$]*\$(?P<value>[\d.]+)",
+                "step": {"input": r"Input price[^$]*" + STEP_VALUE,
+                         "output": r"Output price[^$]*" + STEP_VALUE}}
+    return {"pages": [{"provider": "Acme", "url": URL, "unit": "usd_per_1m",
+                       "models": [model("model-one"), model("model-two")]}]}
+
+
+class NeighbourBoundaryTests(unittest.TestCase):
+    """The window is larger than a block, so only the next model's anchor keeps it inside its own block."""
+
+    def setUp(self):
+        self.md = (FIX / "neighbours_new_layout.md").read_text(encoding="utf-8")
+
+    def test_price_missing_from_a_block_is_not_taken_from_the_next_model(self):
+        with self.assertRaisesRegex(pr.PriceReadError, "Acme / model-one: output price not found"):
+            read(neighbours_config(), self.md)
+
+    def test_next_models_scheduled_change_is_not_read_as_this_models(self):
+        md = self.md.replace("* $1.00\n---\n", "* $1.00\n---\n* Output price\n* Not available\n* $2.00\n---\n", 1)
+        rows, _ = read(neighbours_config(), md)
+        self.assertEqual(prices(rows), [
+            ("model-one", "1", "2"),
+            ("model-two", "3", "9"),
+            ("model-two from 2026-12-01", "6", "18"),
+        ])
+
+
+class AnchorConfigTests(unittest.TestCase):
+    def test_model_with_both_anchor_and_anchors_is_refused(self):
+        cfg = config()
+        cfg["pages"][0]["models"][0]["anchors"] = ["alpha-1 |"]
+        with self.assertRaisesRegex(pr.PriceReadError, "Acme / alpha-1: give either 'anchor' or 'anchors'"):
+            read(cfg)
+
+    def test_model_with_no_anchor_is_refused(self):
+        cfg = config()
+        del cfg["pages"][0]["models"][2]["anchor"]
+        with self.assertRaisesRegex(pr.PriceReadError, "Acme / beta-2: give either 'anchor' or 'anchors'"):
+            read(cfg)
+
+    def test_first_anchor_found_is_used(self):
+        cfg = config()
+        cfg["pages"][0]["models"][0].pop("anchor")
+        cfg["pages"][0]["models"][0]["anchors"] = ["no-such-layout |", "alpha-1 |"]
+        rows, _ = read(cfg)
+        self.assertEqual(prices(rows)[0], ("alpha-1", "1.5", "6"))
+
+
 def mistral_config():
     cfg = json.loads((ROOT / "prices" / "sources.json").read_text(encoding="utf-8"))
     return {"pages": [p for p in cfg["pages"] if p["provider"] == "Mistral"]}
