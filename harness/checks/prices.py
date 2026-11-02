@@ -116,6 +116,25 @@ def _carried_rows(today, prev):
     return Check("carried rows", PASS, "every row was read from its page today")
 
 
+def _page_dates(today, prev):
+    def dates(rows):
+        by_provider = {}
+        for r in rows:
+            if not carried_from(r.get("how_read")):
+                by_provider.setdefault(r.get("provider") or "", set()).add(r.get("page_date_if_shown") or "none")
+        return by_provider
+
+    before, now = dates(prev["rows"]), dates(today["rows"])
+    lost = []
+    for provider in sorted(now):
+        seen = before.get(provider, set()) - {"none"}
+        if seen and "none" in now[provider]:
+            lost.append(f"{provider} shows no page date today, last seen {max(seen)}")
+    if lost:
+        return Check("page dates", FLAG, "; ".join(lost))
+    return Check("page dates", PASS, "no provider lost its page date")
+
+
 def _prices_present(today, prev):
     bad = []
     for r in today["rows"]:
@@ -162,11 +181,13 @@ RULES = [
     (_prices_present, ("today",)),
     (_labels, ("today",)),
     (_carried_rows, ("today",)),
+    (_page_dates, ("today", "prev")),
     (_price_changes, ("today", "prev")),
 ]
 RULE_NAMES = {_columns: "columns", _read_date: "read date", _row_count: "row count",
               _same_rows: "same rows", _prices_present: "prices present",
-              _labels: "labels", _carried_rows: "carried rows", _price_changes: "price changes"}
+              _labels: "labels", _carried_rows: "carried rows",
+              _page_dates: "page dates", _price_changes: "price changes"}
 
 
 def check_price_sheet(today: Path, previous: Path, row_changes: Path = DEFAULT_ROW_CHANGES) -> list[Check]:

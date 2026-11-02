@@ -16,9 +16,10 @@ HEADER = ("read_date,provider,model,input_usd_per_1m,output_usd_per_1m,unit,"
 CARRIED = "\"Carried forward from the 2026-10-28 read, no longer on the provider's page\""
 
 
-def row(date, provider="A", model="m1", inp="1", out="2", label=None, url="https://x.test", how="RAW"):
+def row(date, provider="A", model="m1", inp="1", out="2", label=None, url="https://x.test", how="RAW",
+        page_date="none"):
     label = f"published by {provider}" if label is None else label
-    return f"{date},{provider},{model},{inp},{out},USD per 1M tokens,{url},none,{how},{label}"
+    return f"{date},{provider},{model},{inp},{out},USD per 1M tokens,{url},{page_date},{how},{label}"
 
 
 class SheetCase(unittest.TestCase):
@@ -48,7 +49,7 @@ class SheetCase(unittest.TestCase):
 class TestRules(SheetCase):
     def test_all_pass_on_a_good_sheet(self):
         result = self.run_checks(self.good_today())
-        self.assertEqual(len(result), 8)
+        self.assertEqual(len(result), 9)
         self.assertTrue(all(c.status == PASS for c in result.values()), result)
 
     def test_columns(self):
@@ -138,6 +139,24 @@ class TestRules(SheetCase):
         c = self.run_checks(rows, prev)["price changes"]
         self.assertEqual((c.status, c.detail), (PASS, "no price changed"))
 
+    def test_page_dates_flag_a_provider_that_lost_its_date(self):
+        prev = [row("2026-10-29", page_date="2026-10-19"), row("2026-10-29", "B", "m2", page_date="2026-10-01")]
+        rows = [row("2026-10-30"), row("2026-10-30", "B", "m2", page_date="2026-10-01")]
+        c = self.run_checks(rows, prev)["page dates"]
+        self.assertEqual(c.status, FLAG)
+        self.assertEqual(c.detail, "A shows no page date today, last seen 2026-10-19")
+
+    def test_page_dates_pass_when_dates_stay_change_or_never_existed(self):
+        prev = [row("2026-10-29", page_date="2026-10-19"), row("2026-10-29", "B", "m2")]
+        rows = [row("2026-10-30", page_date="2026-10-29"), row("2026-10-30", "B", "m2")]
+        c = self.run_checks(rows, prev)["page dates"]
+        self.assertEqual((c.status, c.detail), (PASS, "no provider lost its page date"))
+
+    def test_page_dates_ignore_a_carried_row(self):
+        prev = [row("2026-10-29", page_date="2026-10-19"), row("2026-10-29", "A", "m2", page_date="2026-10-19")]
+        rows = [row("2026-10-30", page_date="2026-10-19"), row("2026-10-30", "A", "m2", how=CARRIED)]
+        self.assertEqual(self.run_checks(rows, prev)["page dates"].status, PASS)
+
     def test_prices_present(self):
         for bad in ("", "abc", "-1"):
             rows = [row("2026-10-30", inp=bad), row("2026-10-30", "B", "m2")]
@@ -170,7 +189,7 @@ class TestBadFiles(SheetCase):
     def test_missing_today_fails_without_raising(self):
         prev = self.write("price-sheet-2026-10-29.csv", [row("2026-10-29")])
         result = check_price_sheet(self.dir / "price-sheet-2026-10-30.csv", prev)
-        self.assertEqual(len(result), 8)
+        self.assertEqual(len(result), 9)
         self.assertTrue(all(c.status == FAIL for c in result))
 
     def test_missing_previous_fails_only_comparing_rules(self):
@@ -209,6 +228,16 @@ class TestRealSheets(unittest.TestCase):
         self.assertIn("('Mistral', 'Mistral Large 3') carried from 2026-10-30", result["carried rows"].detail)
         self.assertIn("('Mistral', 'Mistral Medium 3.5') carried from 2026-10-30", result["carried rows"].detail)
         self.assertEqual(result["price changes"].status, PASS)
+
+    def test_2_nov_google_without_page_date_flags_with_the_last_date(self):
+        d = ROOT / "data" / "prices"
+        with tempfile.TemporaryDirectory() as tmp:
+            today = Path(tmp) / "price-sheet-2026-11-02.csv"
+            text = build_2_nov_sheet(d / "price-sheet-2026-10-30.csv").replace(",2026-10-28,", ",none,")
+            today.write_text(text, encoding="utf-8")
+            result = {c.name: c for c in check_price_sheet(today, d / "price-sheet-2026-10-30.csv")}
+        c = result["page dates"]
+        self.assertEqual((c.status, c.detail), (FLAG, "Google shows no page date today, last seen 2026-10-28"))
 
 
 def build_2_nov_sheet(sheet_30_oct):
