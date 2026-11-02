@@ -9,40 +9,76 @@ The job runs these steps in order.
 1. It reads the price pages and writes the day's price sheet. The reader can only read today's UTC date. `--date` defaults to that date. For any other date the job reads no prices and records the FAIL check `price read`, unless the sheet for that date already exists. The other steps still run.
 2. It runs every model in `config/models.json` on one GPU with the pinned vLLM, using the fixed prompt set.
 3. It runs the checks listed below on the price sheet and on the run files.
-4. It commits the new data to this repository. The commit stays local for now.
+4. It commits the new data in a separate `git worktree` of this repository, on the temporary branch `daily-data-YYYY-MM-DD`, which starts from `origin/main`. It never commits in your checkout, never switches your branch and never changes your index.
 5. It builds the site branch (price page, prices index, harness manifest) and runs the site's own commands and checks on it.
-6. If no check has failed, it pushes the data commit to `main` of this repository. If any check has failed, it pushes nothing and undoes its own local commit. The files stay in the working tree.
+6. If no check has failed, it pushes the data commit with `git push origin daily-data-YYYY-MM-DD:main`. The push is fast-forward only. If any check has failed, it pushes nothing.
 7. It opens a pull request on the site repository with the new pages and a table of the check results.
+8. It removes the temporary worktree and the temporary branch, whether the run passed, failed or stopped with an error.
+
+### Your checkout after a push
+
+After a push, the job brings your local `main` up to date with `git merge --ff-only origin/main`, but only when all of these are true.
+
+- Your checkout is on `main`.
+- Your local `main` has no commits that are not on `origin/main`.
+- Each of the day's data files in your checkout is untracked and the same as the pushed copy. The job removes these copies first, because they would block the fast-forward. If the fast-forward fails, it puts them back.
+
+Staged changes to other files stay staged. In any other case, the job leaves your checkout alone, and the pull request and the printed report say why, for example "The harness checkout on this machine is not on main, so local main was not updated."
+
+Commits on your local `main` are never pushed. The data commit starts from `origin/main`, not from your branch.
+
+If a run stops part way, for example because the process was killed, the temporary worktree or branch can stay behind. The next run of the same day removes them before it starts. Nothing in them is public unless `origin/main` already holds it.
 
 If any check fails, the pull request opens as a draft. A draft cannot be merged by accident. When the data was not pushed, the first line of the pull request says "Data was not pushed to the public repository because checks failed."
 
 ### When the job opens no pull request
 
-The job needs the day's price sheet and an earlier sheet to build the price page. If either sheet is missing, the job opens no pull request and pushes nothing. The same happens when the GitHub CLI cannot list or open pull requests, for example because its login has expired. The job then does these things.
+The job needs the day's price sheet and an earlier sheet to build the price page. If either sheet is missing, the job opens no pull request and pushes nothing. The same happens when the GitHub CLI cannot list or open pull requests, for example because its login has expired, and when the publish step stops with any error. The job then does these things.
 
 1. It writes the report, with host and account details removed, to `harness-daily-YYYY-MM-DD.log` in `HARNESS_DAILY_LOG_DIR`, or in the system temp directory when that key is not set.
-2. It shows a macOS notification that names the log file.
+2. It shows a macOS notification that names the log file. If the notification fails, the job goes on.
 3. It exits with code 1.
+
+If the data was already pushed when the error happened, for example when the push of the site branch failed, the report says "The data is already public" and names the harness commit.
+
+The job also writes the local report and shows the notification in two other cases. One is when a step (prices, GPU or publish) stops with an error, which the job records as the FAIL check `price step`, `gpu step` or `publish step`. The other is when the job does not start because another run holds the lock.
 
 If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), the job records the FAIL check `gpu step` and still opens a draft pull request with the price page.
 
 ### Running the job again on the same day
 
-A second run on the same day is safe. Before it changes anything, the job looks for the day's pull request on the site repository. If the pull request exists, the job returns it and changes nothing.
+A second run on the same day is safe. Before it changes anything, the job looks for the day's pull request on the site repository. If the pull request exists, the job returns it and pushes nothing. It reads the harness commit that the branch's manifest pins and says whether the data was pushed.
 
-If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way. The job opens a draft pull request from that branch as it is. The FAIL check `site checks` says that the site checks were not run again.
+- If `origin/main` holds that commit, the result says "Harness data pushed" and names the commit.
+- If it does not, the result says "Harness data not pushed" and the pull request stays a draft. If someone marked it ready for review, the job turns it back into a draft with `gh pr ready --undo`.
 
-The data commit is also safe to repeat. The job makes no new commit when the day's files are already committed and unchanged. It fetches `origin` and makes no push when `origin/main` already holds the commit.
+If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way. The job opens a draft pull request from that branch as it is, with the same pushed or not pushed sentence. The FAIL check `site checks` says that the site checks were not run again.
+
+The data commit is also safe to repeat. The job fetches `origin` and compares each of the day's files with `origin/main`. If `origin/main` already holds all of them, the job makes no commit and no push, and uses the commit that added them.
 
 ### Pull request text
 
 The whole pull request text goes through the scrub in `harness/scrub.py` before it leaves the machine. This includes the title, the summary, the notes from the GPU step, and every check detail. The job then scans the text with the same privacy patterns it uses on the site files. Each line that still matches is replaced with `<removed>`, and the FAIL check `PR body privacy` drafts the pull request.
 
+The scrub removes these things.
+
+- Each value of the host and path keys in the env file, and each word in `HARNESS_PRIVATE_TERMS`, in any case.
+- IPv4 addresses.
+- Absolute paths with two or more parts, such as `/srv/bench/out`, and paths that start with `~/`. A relative path such as `harness/daily_gpu.py` stays.
+- Host names with two or more dots, unless they are on github.com, raw.githubusercontent.com, starfield.net, huggingface.co, pypi.org or docs.vllm.ai. Version numbers such as `0.19.1`, file names such as `content.golden.json`, and Python names such as `requests.exceptions.ConnectionError` stay.
+- Web links to any other host. Links to the hosts above, and site links such as `[corrections log](/research/corrections/)`, stay as they are.
+
+At the start of each run, the job runs `ssh -G` on the `HARNESS_GPU_SSH` alias. It adds the host name, user, port (when it is not 22) and key file paths to `HARNESS_PRIVATE_TERMS` for that run, so the scrub and the GPU step's privacy check catch the real host and account even when the text never names the alias. If `ssh -G` fails, the run goes on without them.
+
+Everything the job prints also goes through the scrub. This includes check details, error text, the lock path and the report location, so the launchd log files hold no host or account details.
+
 ### Time limits and the lock
 
 Each command the publish step runs stops after 900 seconds. `npm ci` and `npm test` get 1800 seconds. The check that the harness commit is public stops after 30 seconds.
 
-The lock file holds the process ID of the run that owns it. A new run takes over a lock only when the lock is older than 6 hours and its process is no longer running. A run removes the lock at the end only if the lock still holds its own process ID.
+The lock file holds the process ID of the run that owns it and the start time of that process, as `ps -o lstart=` prints it. A new run takes over a lock only when the lock is older than 6 hours and its owner is no longer running. An owner counts as not running when its process ID is gone, or when a process with that ID has a different start time, because the system gave the ID to a new process.
+
+To take over, the job writes its own lock to a temporary file in the same folder. It moves that file over the old lock only if the old lock still holds the same text. If another run changed the lock first, the job does not start. A run removes the lock at the end only if the lock still holds its own text.
 
 ## Review and merge
 
@@ -89,7 +125,7 @@ On the first day for a model there is nothing to compare, and both band checks p
 
 The job reads its settings from an env file outside the repository. Nothing in the repository holds a host name, an account name, or a secret. The `HARNESS_DAILY_ENV` key holds the path of the env file.
 
-The push command is not a setting. The job always pushes with `git push origin main`, and only when this repository is on the `main` branch. If it is on another branch, the FAIL check `harness push` drafts the pull request.
+The push command is not a setting. The job always pushes with `git push origin daily-data-YYYY-MM-DD:main`, from its temporary worktree. The branch your checkout is on does not matter. If the push fails, for example because `origin/main` moved and the push is not a fast-forward, the FAIL check `harness push` drafts the pull request.
 
 | Key | What it holds |
 |---|---|
@@ -99,13 +135,13 @@ The push command is not a setting. The job always pushes with `git push origin m
 | `HARNESS_GPU_HF_HOME` | The model cache directory on the GPU machine. |
 | `HARNESS_GPU_INDEX` | The index of the one GPU the runs use. |
 | `HARNESS_SITE_REPO_URL` | The clone URL of the site repository. |
-| `HARNESS_SITE_WORKDIR` | The local directory where the job keeps its clone of the site repository. |
+| `HARNESS_SITE_WORKDIR` | The local directory where the job keeps its clone of the site repository and its temporary harness worktree. |
 | `HARNESS_GH_CONFIG_DIR` | The GitHub CLI config directory whose login opens the pull request. |
 | `HARNESS_DAILY_ENV` | The path of the env file itself. |
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
-| `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request. The default is the system temp directory. |
+| `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |
 | `HARNESS_DRY_RUN` | `1`, `true`, `yes` or `on`, in any case, turns on dry run. The GPU step lists its commands and runs none. The publish step makes no commit, no push, no clone and no pull request, and prints what it would do. Any other value, or no value, is a normal run. |
-| `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never appear in a result file, for example a host name. The privacy check fails if one does. |
+| `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run. |
 
 ## Run it by hand
 
@@ -129,7 +165,7 @@ scripts/launchd/install.sh --python /path/to/python3 --repo /path/to/this/repo \
   --logdir /path/to/logs --envfile /path/to/daily.env --hour 6 --minute 30
 ```
 
-3. The installer writes `~/Library/LaunchAgents/net.starfield.harness-daily.plist` and prints a `launchctl bootstrap` command. The installer does not run that command. Run it yourself to load the job.
+3. The installer writes `~/Library/LaunchAgents/net.starfield.harness-daily.plist` and prints a `launchctl bootstrap` command. Paths can contain `&`, `<` and `>`. The installer does not run that command. Run it yourself to load the job.
 
 Standard output and standard error go to two files in the log directory. To remove the job, run `scripts/launchd/install.sh --uninstall`. It prints the `launchctl bootout` command and the file to delete.
 
