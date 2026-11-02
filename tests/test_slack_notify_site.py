@@ -1,3 +1,4 @@
+from datetime import date
 import io
 import json
 import tempfile
@@ -87,6 +88,12 @@ class SiteTest(unittest.TestCase):
         self.assertIn("How Model Watch gets its numbers is live: <https://starfield.net/research/methodology/"
                       "|starfield.net/research/methodology/>", text)
         self.assertIn("Corrections is live: <https://starfield.net/research/corrections/", text)
+
+    def test_a_new_price_page_reads_like_the_owner_example(self):
+        text = slack_notify.build_live_message(date(2026, 10, 30), [("Model prices for 30th October",
+                                       "https://starfield.net/research/prices/2026-10-30/", "new")])
+        self.assertIn("Model prices for 30th October: <https://starfield.net/research/prices/2026-10-30/|", text)
+        self.assertNotIn("is live", text)
 
     def test_undated_pages_do_not_decide_the_findings_day(self):
         self.pages.write_text(json.dumps([PAGES[0], PAGES[2]]))

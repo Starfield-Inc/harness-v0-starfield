@@ -134,12 +134,12 @@ def build_run_message(day, checks, price_sheet, previous_price_sheet, speed_csv,
 
 
 def _page_line(page) -> str:
-    """page is (label, url) or (label, url, status). Without a status, price pages read
-    "label: link" and other pages "label is live: link"."""
+    """page is (label, url) or (label, url, status). A new price page reads "label: link"
+    as in the owner's example, other new pages "label is live: link", an updated page "label updated: link"."""
     label, url, *rest = page
     link = f"<{url}|{_esc(re.sub(r'^https?://', '', url))}>"
-    if rest:
-        return f"{_esc(label)} {'updated' if rest[0] == 'updated' else 'is live'}: {link}"
+    if rest and rest[0] == "updated":
+        return f"{_esc(label)} updated: {link}"
     if "/research/prices/" in url:
         return f"{_esc(label)}: {link}"
     return f"{_esc(label)} is live: {link}"
