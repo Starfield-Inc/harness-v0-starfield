@@ -50,9 +50,11 @@ The job also writes the local report and shows the notification in these other c
 - Any other error stops the job. The job prints one scrubbed line to standard error and exits with code 1. It never prints a Python traceback, because standard error is the launchd error log and a traceback holds local paths. Even an import error, for example under the wrong Python, prints only `harness.daily stopped:` and the error name.
 - The env file cannot be read, because it is missing or is not UTF-8. The job prints one scrubbed line and exits with code 2.
 
-If the folder in `HARNESS_DAILY_LOCK_DIR` does not exist, the job makes it. If the job cannot make it, it puts the lock in the system temp directory.
+If the folder in `HARNESS_DAILY_LOCK_DIR` does not exist, the job makes it. If the job cannot make it, or the file system cannot lock (`flock` fails with an error), the job does not start and does not use another folder, because two runs could then lock two different files. It exits with code 1, and the local report and the notification say why.
 
 If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), the job records the FAIL check `gpu step` and still opens a draft pull request with the price page.
+
+The GPU step copies the run files back into a staging folder next to the launch record. It empties that folder before every copy, and rsync skips hidden files (`--exclude=.*`), so a temp file of an interrupted rsync or a `.DS_Store` cannot fail a later copy back. A link, a device, a nested folder or any other file that is not a run file still fails the copy back. The stop step writes to the launch log on the GPU machine only when that log already exists. Otherwise it prints its message and leaves no log, so a launch that failed at the ssh connection still counts as not launched and the same day is tried again.
 
 ### Running the job again on the same day
 
@@ -90,14 +92,16 @@ The scrub removes these things.
 
 - Each value of the host and path keys in the env file, and each word in `HARNESS_PRIVATE_TERMS`, in any case. The scrub removes a word only as a whole token, that is, when no letter or digit comes right before or after it. With the word `2222`, the link `commit/9f2222ab` stays. When the word is part of a host name or a path (letters, digits, dots, dashes, underscores and slashes around it), the scrub removes the whole host name or path. With the word `gpu`, all of `gpu-01.lan` goes.
 - The user name and password in a link, that is, everything between `://` and `@`, even in a link to github.com.
-- Any text of the form `something@something`, unless it is an email address on one of the safe hosts below. `root@node7.lan` goes. `344872025+esteban657@users.noreply.github.com` stays.
+- Any text of the form `something@something`, unless it is an email address on one of the safe hosts below, or a name with a version after the at sign: `torch@2.4` and `actions/checkout@v4` stay (a version starts with a digit or `v` and a digit, and the name before it has no dot). `root@node7.lan` and `root@10.1.2.3` go. `344872025+esteban657@users.noreply.github.com` stays.
 - Text that looks like a secret, wherever it is: tokens that start with `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `sk-`, `xox` or `AKIA`, and private key blocks (`-----BEGIN ... PRIVATE KEY-----`).
 - IPv4 addresses.
 - Absolute paths with two or more parts, such as `/srv/bench/out`, and paths that start with `~/`. A relative path such as `harness/daily_gpu.py` stays.
 - Host names with two or more dots, unless they are on github.com, raw.githubusercontent.com, starfield.net, huggingface.co, pypi.org or docs.vllm.ai. Version numbers such as `0.19.1`, file names such as `content.golden.json`, and Python names such as `requests.exceptions.ConnectionError` stay.
 - Web links to any other host. Links to the hosts above, and site links such as `[corrections log](/research/corrections/)`, stay as they are.
 
-At the start of each run, the job runs `ssh -G` on the `HARNESS_GPU_SSH` alias. It adds the host name, the alias, the base name of each key file (such as `bench_key`) and the user to `HARNESS_PRIVATE_TERMS` for that run. It adds the user only when the name has 4 or more characters and is not `root`, `ubuntu`, `admin` or `user`, because those are common words. It never adds the port, because a port is not secret and a port number matches parts of commit hashes. The job adds these words so the scrub and the GPU step's privacy check catch the real host and account even when the text never names the alias. If `ssh -G` fails, the run goes on without them.
+At the start of each run, the job runs `ssh -G` on the `HARNESS_GPU_SSH` alias. It adds the host name, the alias, the base name of each key file (such as `bench_key`) and the user to `HARNESS_PRIVATE_TERMS` for that run. It adds the user only when the name has 3 or more characters and is not `root`, `ubuntu`, `admin`, `user`, `pi` or `ec2-user`, because those are common words. It never adds the port, because a port is not secret and a port number matches parts of commit hashes. The job adds these words so the scrub and the GPU step's privacy check catch the real host and account even when the text never names the alias. If `ssh -G` fails, the run goes on without them.
+
+The job does not add a word, and the scrub and the site scan do not treat it as private, when it is a whole word in any tracked file of the harness repository (`git grep -iwqF`). That repository is public, and a word such as `gpu` or `v100` is in every day's real data (the `gpu` column of the speed CSV, `Tesla V100-SXM3-32GB`), so the site scan would find it every day and no pull request would open. The job goes on, prints this line, and writes the local report and the notification: "These terms were left out because they already appear in the public repository: ..., choose a unique ssh alias."
 
 Everything the job prints also goes through the scrub. This includes check details, error text, the lock path and the report location, so the launchd log files hold no host or account details.
 
@@ -170,7 +174,7 @@ The push command is not a setting. The job always pushes with `git push origin d
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
 | `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |
 | `HARNESS_DRY_RUN` | `1`, `true`, `yes` or `on`, in any case, turns on dry run. The GPU step lists its commands and runs none. The publish step makes no commit, no push, no clone and no pull request, and prints what it would do. Any other value, or no value, is a normal run. |
-| `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run. |
+| `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run, except words that already appear in the public repository. |
 
 ## Run it by hand
 
