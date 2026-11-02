@@ -12,7 +12,7 @@ from harness.checks import FAIL, FLAG, PASS, Check
 from harness.daily_types import GpuResult, PriceResult
 from harness import publish as publish_module
 from harness.publish import (build_pr_body, compare_page_to_sheet,
-                             index_line, notes_from_page, price_changes, publish, render_price_page,
+                             index_line, next_variant, notes_from_page, price_changes, publish, render_price_page,
                              run_command, scan_added_lines)
 from harness.price_table import COLUMNS
 
@@ -40,6 +40,20 @@ def git(cwd, *args):
                           cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
+PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x05\x00\x00\x00\x02\xd0\x08\x06\x00\x00\x00\xff\xfe"
+
+
+def render_cover(clone, key):
+    """What `npm run graphics -- heroes <key>` leaves behind: the cover and its line in heroes.json."""
+    hero = clone / "assets/research-covers" / key.removeprefix("research/") / "hero.png"
+    hero.parent.mkdir(parents=True, exist_ok=True)
+    hero.write_bytes(PNG)
+    manifest = clone / "assets/news/heroes.json"
+    data = json.loads(manifest.read_text())
+    data[key] = "fedcba9876543210"
+    manifest.write_text(json.dumps(data, indent=2) + "\n")
+
+
 class Fake:
     """Runs git for real (against local bare repos) and answers gh, curl, npm and node from a table."""
 
@@ -52,6 +66,7 @@ class Fake:
         self.osascript_raises = False
         self.public = "200"
         self.raise_on = set()
+        self.renders = True
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append((list(argv), cwd, env))
@@ -77,6 +92,8 @@ class Fake:
         key = " ".join(argv[:3])
         if any(f in key for f in self.fail_on):
             return out("", 1, f"{key} broke at /Users/someone/secret/path")
+        if argv[:5] == ["npm", "run", "graphics", "--", "heroes"] and self.renders:
+            render_cover(Path(cwd), argv[5])
         return out("ok")
 
     def argvs(self):
@@ -114,8 +131,13 @@ class Setup:
         seed = root / "seed"
         subprocess.run(["git", "clone", "-q", str(self.site_remote), str(seed)], check=True, capture_output=True)
         git(seed, "checkout", "-q", "-b", "main")
-        for d in ("assets/research", "content/research", "deploy"):
+        for d in ("assets/research", "assets/news", "content/research", "content/graphics/research", "deploy"):
             (seed / d).mkdir(parents=True)
+        (seed / "deploy/graphics.mjs").write_text(
+            "export const VARIANTS = ['orbits', 'horizon', 'band', 'rings', 'twin', 'eclipse', 'scan', 'bokeh'];\n")
+        (seed / "content/graphics/research/prices-2026-10-28.json").write_text('{"hero": {"variant": 7}, "blocks": []}\n')
+        (seed / "content/graphics/research/prices-2026-10-29.json").write_text('{"hero": {"variant": 6}, "blocks": []}\n')
+        (seed / "assets/news/heroes.json").write_text('{\n  "research/prices-2026-10-29": "0123456789abcdef"\n}\n')
         (seed / "assets/research/price-sheet-2026-10-29.csv").write_text(self.prev_sheet.read_text())
         (seed / "content/research/prices-2026-10-29.md").write_text(
             f"---\ntitle: x\n---\nbody\n\n## Notes\n\n{NOTES}\n\n## Data\n\nraw\n")
@@ -131,7 +153,8 @@ class Setup:
         git(seed, "push", "-q", "origin", "main")
 
         self.env = {"HARNESS_SITE_REPO_URL": str(self.site_remote), "HARNESS_SITE_WORKDIR": str(root / "work"),
-                    "HARNESS_GH_CONFIG_DIR": str(root / "gh")}
+                    "HARNESS_GH_CONFIG_DIR": str(root / "gh"), "HARNESS_CHROME": str(root / "chrome")}
+        (root / "chrome").write_text("")
         self.price = PriceResult(DAY, self.sheet, self.prev_sheet, [Check("prices ok", PASS, "fine")])
         self.gpu = GpuResult(DAY, [self.run_csv], self.summary, [Check("runs ok", PASS, "fine")])
 
@@ -312,7 +335,8 @@ class PublishTests(unittest.TestCase):
 
         npm = [a for a in self.fake.argvs() if a[0] in ("npm", "node")]
         self.assertEqual([" ".join(a[:3]) for a in npm],
-                         ["npm ci", "npm run sync:harness", "npm run harness:check", "node --test deploy/content.golden.test.mjs",
+                         ["npm ci", "npm run sync:harness", "npm run harness:check", "npm run build", "npm run graphics",
+                          "node --test deploy/content.golden.test.mjs",
                           "npm test", "npm run content:check", "npm run seo:check"])
         golden = next(c for c in self.fake.calls if c[0][0] == "node")
         self.assertEqual(golden[2], {"UPDATE_GOLDEN": "1"})
@@ -772,6 +796,135 @@ class PublishTests(unittest.TestCase):
         self.run_publish(s)
         body = (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
         self.assertIn("- price changes: xAI grok-4.7: output $6 -> $7", body)
+
+
+class CoverTests(unittest.TestCase):
+    KEY = "research/prices-2026-10-30"
+    SPEC = "content/graphics/research/prices-2026-10-30.json"
+    HERO = "assets/research-covers/prices-2026-10-30/hero.png"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.s = Setup(self.tmp.name)
+        self.fake = Fake()
+
+    def run_publish(self):
+        return publish(DAY, self.s.repo, self.s.price, self.s.gpu, self.s.env, runner=self.fake)
+
+    def site_branch(self, path):
+        return git(self.s.site_remote, "show", f"daily-2026-10-30:{path}")
+
+    def body(self):
+        return (Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
+
+    def cover_calls(self):
+        return [c for c in self.fake.calls if c[0][:3] in (["npm", "run", "build"], ["npm", "run", "graphics"])]
+
+    def seed_site(self, files):
+        seed = Path(self.tmp.name) / "seed"
+        git(seed, "pull", "-q", "origin", "main")
+        for rel, data in files.items():
+            (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+            (seed / rel).write_bytes(data)
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "cover by hand")
+        git(seed, "push", "-q", "origin", "main")
+
+    def test_variant_is_the_previous_one_plus_one_and_wraps(self):
+        self.assertEqual(next_variant(6, 8), 7)
+        self.assertEqual(next_variant(7, 8), 0)
+        self.assertEqual(next_variant(1, 8), 2)
+        for missing in (None, 8, -1, "3", 2.0):
+            self.assertEqual(next_variant(missing, 8), 0, missing)
+
+    def test_cover_is_made_after_the_page_and_before_the_site_tests(self):
+        res = self.run_publish()
+        self.assertFalse(res.draft)
+        self.assertEqual(json.loads(self.site_branch(self.SPEC)), {"hero": {"variant": 7}, "blocks": []})
+        self.assertEqual(git(self.s.site_remote, "cat-file", "-s", f"daily-2026-10-30:{self.HERO}"), str(len(PNG)))
+        self.assertIn(self.KEY, json.loads(self.site_branch("assets/news/heroes.json")))
+        clone = str(Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30")
+        self.assertEqual([(c[0], str(c[1]), c[2]) for c in self.cover_calls()],
+                         [(["npm", "run", "build"], clone, {"CHROME": self.s.env["HARNESS_CHROME"]}),
+                          (["npm", "run", "graphics", "--", "heroes", self.KEY], clone, {"CHROME": self.s.env["HARNESS_CHROME"]})])
+        order = [" ".join(a[:3]) for a in self.fake.argvs()]
+        self.assertLess(order.index("npm run harness:check"), order.index("npm run build"))
+        self.assertLess(order.index("npm run graphics"), order.index("node --test deploy/content.golden.test.mjs"))
+        body = self.body()
+        self.assertIn(f"| cover image | pass | {self.SPEC} (variant 7), {self.HERO} and assets/news/heroes.json |", body)
+        self.assertNotIn("is not made here", body)
+        self.assertIn("Adds the cover image for the new price page", body)
+
+    def test_missing_chrome_fails_the_cover_and_drafts_the_pr(self):
+        self.s.env["HARNESS_CHROME"] = str(Path(self.tmp.name) / "no-chrome")
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertEqual(self.cover_calls(), [])
+        self.assertIn("npm test", [" ".join(a[:2]) for a in self.fake.argvs()])
+        create = next(c for c in self.fake.calls if c[0][:3] == ["gh", "pr", "create"])
+        self.assertIn("--draft", create[0])
+        body = self.body()
+        self.assertIn("| cover image | FAIL | The cover image for the new price page is not made here. Chrome was not found; "
+                      "set HARNESS_CHROME to its path. |", body)
+        self.assertIn("The cover image for the new price page is not made here. It needs `npm run graphics`", body)
+        self.assertNotIn("no-chrome", body)
+
+    def test_failed_graphics_command_is_listed_without_local_paths(self):
+        self.fake.fail_on = {"npm run graphics"}
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        body = self.body()
+        self.assertIn("| cover image | FAIL | The cover image for the new price page is not made here. "
+                      "`npm run graphics -- heroes research/prices-2026-10-30` failed:", body)
+        self.assertNotIn("/Users/someone", body)
+        self.assertIn("| site tests |", body)
+
+    def test_graphics_that_writes_no_cover_fails(self):
+        self.fake.renders = False
+        self.assertTrue(self.run_publish().draft)
+        self.assertIn("`npm run graphics` wrote no assets/research-covers/prices-2026-10-30/hero.png", self.body())
+
+    def test_cover_is_not_made_when_an_earlier_step_failed(self):
+        self.fake.fail_on = {"npm run harness:check"}
+        self.run_publish()
+        self.assertEqual(self.cover_calls(), [])
+        self.assertIn("| cover image | FAIL | not run because site manifest check failed |", self.body())
+
+    def test_binary_cover_is_not_scanned_as_text(self):
+        noisy = PNG + b"\n/Users/someone/secret root@10.1.2.3 ssh\n\xff\xfe\x00"
+        with mock.patch(f"{__name__}.PNG", noisy):
+            res = self.run_publish()
+        self.assertFalse(res.draft)
+        self.assertIn("| no host details in site files | pass |", self.body())
+        self.assertEqual(git(self.s.site_remote, "cat-file", "-s", f"daily-2026-10-30:{self.HERO}"), str(len(noisy)))
+
+    def test_scan_skips_binary_diff_lines(self):
+        diff = ("diff --git a/x.png b/x.png\nnew file mode 100644\nindex 0000000..1234567\n"
+                "Binary files /dev/null and b/x.png differ\n+++ b/heroes.json\n+  \"research/prices-2026-10-30\": \"fedcba98\"\n")
+        self.assertEqual(scan_added_lines(diff, {}), [])
+
+    def test_cover_already_on_main_is_not_made_again(self):
+        self.seed_site({self.SPEC: b'{"hero": {"variant": 2}, "blocks": []}\n', self.HERO: PNG,
+                        "assets/news/heroes.json": json.dumps({self.KEY: "0123456789abcdef"}).encode()})
+        res = self.run_publish()
+        self.assertFalse(res.draft)
+        self.assertEqual(self.cover_calls(), [])
+        self.assertEqual(json.loads(self.site_branch(self.SPEC))["hero"]["variant"], 2)
+        self.assertIn(f"| cover image | pass | {self.SPEC} and {self.HERO} are already on the branch |", self.body())
+
+    def test_existing_spec_keeps_its_variant_when_the_image_is_missing(self):
+        self.seed_site({self.SPEC: b'{"hero": {"variant": 2}, "blocks": []}\n'})
+        self.run_publish()
+        self.assertEqual(len(self.cover_calls()), 2)
+        self.assertEqual(json.loads(self.site_branch(self.SPEC))["hero"]["variant"], 2)
+
+    def test_second_run_makes_no_cover(self):
+        first = self.run_publish()
+        self.fake.pr_list = json.dumps([own_pr(first.pr_urls[0], draft=False)])
+        before = len(self.cover_calls())
+        self.run_publish()
+        self.assertEqual(len(self.cover_calls()), before)
 
 
 class RunCommandTests(unittest.TestCase):

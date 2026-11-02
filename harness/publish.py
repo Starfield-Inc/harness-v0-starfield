@@ -32,6 +32,8 @@ FF_MERGE = ["git", "merge", "--ff-only", "origin/main"]
 NOT_PUSHED = "Data was not pushed to the public repository because checks failed."
 LONG_COMMANDS = (["npm", "ci"], ["npm", "test"])
 SCRIPT_READS_FROM = date(2026, 10, 28)
+DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+COVER_NOT_MADE = "The cover image for the new price page is not made here."
 NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
 DEFAULT_NOTES = (
     "- Hosts that resell a model can charge more than the maker. Each row names the provider that published its price.\n"
@@ -65,7 +67,8 @@ def run_command(argv, cwd=None, env=None, timeout=None):
     if timeout is None:
         timeout = 1800 if list(argv[:2]) in LONG_COMMANDS else 900
     try:
-        return subprocess.run(argv, cwd=cwd, env=child_env, capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(argv, cwd=cwd, env=child_env, capture_output=True, text=True, errors="replace",
+                              timeout=timeout)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout} s")
 
@@ -586,6 +589,65 @@ def _add_to_pages_test(clone, day):
     path.write_text(new, encoding="utf-8")
 
 
+def next_variant(previous, count):
+    """The previous day's cover variant plus one, so two price pages in a row never share a cover layout."""
+    if not (isinstance(previous, int) and 0 <= previous < count):
+        return 0
+    return (previous + 1) % count
+
+
+def _variant_count(clone):
+    m = re.search(r"export const VARIANTS = \[([^\]]*)\]", (clone / "deploy" / "graphics.mjs").read_text(encoding="utf-8"))
+    count = len(re.findall(r"'[^']*'", m.group(1))) if m else 0
+    if not count:
+        raise PublishError("deploy/graphics.mjs has no VARIANTS list")
+    return count
+
+
+def _previous_variant(clone, day):
+    specs = [p for p in sorted((clone / "content" / "graphics" / "research").glob("prices-????-??-??.json"))
+             if date.fromisoformat(p.stem.removeprefix("prices-")) < day]
+    if not specs:
+        return None
+    return json.loads(specs[-1].read_text(encoding="utf-8")).get("hero", {}).get("variant")
+
+
+def _make_cover(runner, clone, day, env):
+    """Write the page's graphics spec and render its cover with the site's own commands. Returns the check."""
+    key = f"research/prices-{day.isoformat()}"
+    spec = clone / "content" / "graphics" / f"{key}.json"
+    hero = clone / "assets" / "research-covers" / f"prices-{day.isoformat()}" / "hero.png"
+    heroes = clone / "assets" / "news" / "heroes.json"
+    rel = lambda p: str(p.relative_to(clone))
+
+    def rendered():
+        try:
+            return hero.exists() and key in json.loads(heroes.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+
+    if spec.exists() and rendered():
+        return Check("cover image", PASS, f"{rel(spec)} and {rel(hero)} are already on the branch")
+    chrome = env.get("HARNESS_CHROME") or DEFAULT_CHROME
+    if not Path(chrome).exists():
+        return Check("cover image", FAIL, f"{COVER_NOT_MADE} Chrome was not found; set HARNESS_CHROME to its path.")
+    try:
+        if not spec.exists():
+            variant = next_variant(_previous_variant(clone, day), _variant_count(clone))
+            spec.parent.mkdir(parents=True, exist_ok=True)
+            spec.write_text(json.dumps({"hero": {"variant": variant}, "blocks": []}, indent=2) + "\n", encoding="utf-8")
+        variant = json.loads(spec.read_text(encoding="utf-8"))["hero"]["variant"]
+    except (OSError, ValueError, KeyError, TypeError, PublishError) as e:
+        return Check("cover image", FAIL, f"{COVER_NOT_MADE} The graphics spec could not be written: {_tail(str(e))}")
+    for argv in (["npm", "run", "build"], ["npm", "run", "graphics", "--", "heroes", key]):
+        res = _sh(runner, argv, cwd=clone, env={"CHROME": chrome}, check=False)
+        if res.returncode != 0:
+            return Check("cover image", FAIL, f"{COVER_NOT_MADE} `{' '.join(argv)}` failed: {_tail(res.stderr or res.stdout)}")
+    if not rendered():
+        return Check("cover image", FAIL, f"{COVER_NOT_MADE} `npm run graphics` wrote no {rel(hero)} or no {key} entry in {rel(heroes)}.")
+    return Check("cover image", PASS, f"{rel(spec)} (variant {variant}), {rel(hero)} and {rel(heroes)}")
+
+
 class _Site(NamedTuple):
     env: dict
     runner: object
@@ -731,10 +793,12 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     own.append(Check("price page matches sheet", FAIL if problems else PASS,
                      "; ".join(problems[:5]) if problems else
                      f"{sum(len(v) for v in parse_page_tables(page_text).values())} rows compared cell for cell"))
-    own += _run_site_steps(runner, clone, data_dir, sha)
+    own += _run_site_steps(runner, clone, data_dir, sha, day, ctx.env)
+    cover = next(c for c in own if c.name == "cover image")
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
-    diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json"], cwd=clone).stdout
+    diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json", ":!*.png"],
+               cwd=clone).stdout
     hits = scan_added_lines(diff, ctx.env)
     own.append(Check("no host details in site files", FAIL if hits else PASS,
                      f"private text matched: {', '.join(hits)}" if hits else "added lines scanned, no private text"))
@@ -764,7 +828,8 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     summary.append(f"Adds the speed summary CSV for {fmt_day(day)} and pins it in the harness manifest. "
                    "The Model Watch post is not changed." if gpu_result.summary else "No GPU runs were added today.")
     summary += list(gpu_result.notes)
-    summary.append("The cover image for the new price page is not made here. It needs `npm run graphics` on a machine with Chrome.")
+    summary.append("Adds the cover image for the new price page, made with `npm run graphics`." if cover.status == PASS else
+                   f"{COVER_NOT_MADE} It needs `npm run graphics` on a machine with Chrome; the `cover image` check says why.")
     summary += local_note
 
     _sh(runner, ["git", *AUTHOR, "commit", "-m", f"Daily price pages: prices read {fmt_day(day)}"], cwd=clone)
@@ -775,25 +840,31 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     return result
 
 
-def _run_site_steps(runner, clone, harness_dir, sha):
+def _run_site_steps(runner, clone, harness_dir, sha, day, env):
+    def step(name, argv, detail, extra_env=None):
+        return name, lambda: _step(runner, name, argv, clone, detail, extra_env)
+
     steps = []
     if not (clone / "node_modules").exists():
-        steps.append(("site dependencies", ["npm", "ci"], "installed with npm ci", None))
+        steps.append(step("site dependencies", ["npm", "ci"], "installed with npm ci"))
     steps += [
-        ("site manifest sync", ["npm", "run", "sync:harness", "--", str(harness_dir), "--commit", sha, "--write"],
-         "pins and file hashes written by the site's own command", None),
-        ("site manifest check", ["npm", "run", "harness:check"], "every file in assets/research matches the manifest", None),
-        ("site golden file", ["node", "--test", "deploy/content.golden.test.mjs"],
-         "golden file regenerated with UPDATE_GOLDEN=1", {"UPDATE_GOLDEN": "1"}),
-        ("site tests", ["npm", "test"], "npm test passed", None),
-        ("site content check", ["npm", "run", "content:check"], "content and guard checks passed", None),
-        ("site SEO check", ["npm", "run", "seo:check", "--", "--published"], "SEO check passed", None),
+        step("site manifest sync", ["npm", "run", "sync:harness", "--", str(harness_dir), "--commit", sha, "--write"],
+             "pins and file hashes written by the site's own command"),
+        step("site manifest check", ["npm", "run", "harness:check"], "every file in assets/research matches the manifest"),
+        # The build checks the manifest, and the golden file and the tests read the cover, so it goes between them.
+        ("cover image", lambda: _make_cover(runner, clone, day, env)),
+        step("site golden file", ["node", "--test", "deploy/content.golden.test.mjs"],
+             "golden file regenerated with UPDATE_GOLDEN=1", {"UPDATE_GOLDEN": "1"}),
+        step("site tests", ["npm", "test"], "npm test passed"),
+        step("site content check", ["npm", "run", "content:check"], "content and guard checks passed"),
+        step("site SEO check", ["npm", "run", "seo:check", "--", "--published"], "SEO check passed"),
     ]
     out = []
-    for name, argv, detail, extra_env in steps:
-        out.append(_step(runner, name, argv, clone, detail, extra_env))
-        if out[-1].status == FAIL:
-            if name != "site tests" and not any(c.name == "site tests" for c in out):
-                out.append(Check("site tests", FAIL, f"not run because {name} failed"))
+    for i, (name, run) in enumerate(steps):
+        out.append(run())
+        # A missing cover fails two site tests but stops nothing else, so the draft lists every other result.
+        if out[-1].status == FAIL and name != "cover image":
+            later = [n for n, _ in steps[i + 1:]]
+            out += [Check(n, FAIL, f"not run because {name} failed") for n in ("cover image", "site tests") if n in later]
             break
     return out
