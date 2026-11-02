@@ -72,6 +72,16 @@ class ScrubTest(unittest.TestCase):
         self.assertNotIn("node7", out)
         self.assertIn("344872025+esteban657@users.noreply.github.com", out)
 
+    def test_a_package_or_action_version_after_an_at_sign_stays(self):
+        text = "pip install torch@2.4 and uses actions/checkout@v4 and numpy@1.26.4."
+        self.assertEqual(scrub(text, {}), text)
+
+    def test_user_at_host_is_still_removed_next_to_a_version_ref(self):
+        out = scrub("torch@2.4 ssh root@node7.lan, root@10.1.2.3 and x-access-token:abc@github.com", {})
+        self.assertTrue(out.startswith("torch@2.4 ssh "))
+        for bad in ("root@", "node7", "10.1.2.3", "abc@"):
+            self.assertNotIn(bad, out)
+
     def test_secret_tokens_are_removed_anywhere(self):
         text = ("token ghp_abcdefghijklmnop1234 and github_pat_11ABCDEF_xyz and sk-proj-abcdefghijklmnop "
                 "and xoxb-1234-abcd and AKIAABCDEFGHIJKLMNOP\n"

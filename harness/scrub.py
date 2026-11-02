@@ -26,6 +26,8 @@ SECRETS = re.compile(
     r"|(?<![A-Za-z0-9])xox[a-z]-[A-Za-z0-9-]+"
     r"|(?<![A-Za-z0-9])AKIA[0-9A-Z]{12,}", re.S)
 AT_TOKEN = re.compile(r"(?<!\S)\S+@\S+")
+# name@version, as in torch@2.4 or actions/checkout@v4: a version after the at sign and no dot before it.
+VERSION_REF = re.compile(r"v?\d[\w.+-]*")
 EMAIL = re.compile(r"[\w.+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
 # Letters, digits, dot, dash, underscore and slash: the characters of a host name or a path.
 TOKEN_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
@@ -88,7 +90,12 @@ def _redact_terms(text, terms):
 def _at_token(m: re.Match) -> str:
     core = m.group().strip("()[]<>.,;:'\"`")
     email = EMAIL.fullmatch(core)
-    return m.group() if email and _is_safe(email.group(1)) else "<redacted>"
+    if email and _is_safe(email.group(1)):
+        return m.group()
+    name, _, after = core.partition("@")
+    if "." not in name and VERSION_REF.fullmatch(after) and not IPV4.fullmatch(after):
+        return m.group()
+    return "<redacted>"
 
 
 def private_hits(text: str, env: dict) -> list[str]:
