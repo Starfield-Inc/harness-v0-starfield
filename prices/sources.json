@@ -86,6 +86,7 @@
       "unit": "usd_per_1m",
       "unit_check": "per 1M tokens in USD",
       "page_date": "Last updated (?P<date>\\d{4}-\\d{2}-\\d{2}) UTC",
+      "page_date_optional": true,
       "models": [
         {
           "model": "gemini-4-argon (Standard)",
