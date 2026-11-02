@@ -191,8 +191,56 @@ class ParseTests(unittest.TestCase):
         self.assertIn("Acme", str(ctx.exception))
 
 
+GOOGLE_URL = "https://ai.google.dev/gemini-api/docs/pricing"
+SHEET_1030 = ROOT / "data" / "prices" / "price-sheet-2026-10-30.csv"
+
+
+def google_config():
+    cfg = json.loads((ROOT / "prices" / "sources.json").read_text(encoding="utf-8"))
+    return {"pages": [p for p in cfg["pages"] if p["provider"] == "Google"]}
+
+
+def read_google(html, cfg=None):
+    return pr.read_prices(cfg or google_config(), fetcher({GOOGLE_URL: html}), NOW)
+
+
 def prices(rows):
     return [(r["model"], r["input_usd_per_1m"], r["output_usd_per_1m"]) for r in rows]
+
+
+class GoogleLayoutTests(unittest.TestCase):
+    """The rendered page (22 Oct 2026) and the Markdoc source it became on 2 Nov 2026."""
+
+    def setUp(self):
+        with open(SHEET_1030, newline="", encoding="utf-8") as f:
+            self.sheet_1030 = prices(r for r in csv.DictReader(f) if r["provider"] == "Google")
+        self.assertEqual(len(self.sheet_1030), 6)
+
+    def test_rendered_layout_reads_all_six_rows(self):
+        rows = read_google(page("google_pricing_2026-10-22"))
+        self.assertEqual(prices(rows), self.sheet_1030)
+        self.assertEqual({r["page_date_if_shown"] for r in rows}, {"2026-10-19"})
+
+    def test_markdoc_layout_reads_all_six_rows_with_the_30_oct_values(self):
+        rows = read_google(page("google_pricing_2026-11-02"))
+        self.assertEqual(prices(rows), self.sheet_1030)
+        self.assertEqual({r["page_date_if_shown"] for r in rows}, {"none"})
+
+    def test_each_layout_is_read_by_its_own_anchor(self):
+        for keep, html in ((0, "google_pricing_2026-11-02"), (1, "google_pricing_2026-10-22")):
+            cfg = google_config()
+            for m in cfg["pages"][0]["models"]:
+                m["anchors"] = [m["anchors"][keep]]
+            with self.assertRaisesRegex(pr.PriceReadError, "model not found"):
+                read_google(page(html), cfg)
+
+    def test_neither_layout_fails_and_names_both_anchors(self):
+        with self.assertRaises(pr.PriceReadError) as ctx:
+            read_google("<p>Paid Tier, per 1M tokens in USD</p>")
+        msg = str(ctx.exception)
+        self.assertIn("Google / gemini-4-argon (Standard): model not found", msg)
+        for anchor in google_config()["pages"][0]["models"][0]["anchors"]:
+            self.assertIn(repr(anchor), msg)
 
 
 def neighbours_config():
@@ -410,7 +458,7 @@ class RepoConfigTests(unittest.TestCase):
     def test_every_model_has_a_way_to_read_both_prices(self):
         for p in self.cfg["pages"]:
             for m in p["models"]:
-                self.assertIn("anchor", m, m["model"])
+                self.assertTrue("anchor" in m or m.get("anchors"), m["model"])
                 self.assertTrue("row" in m or ("input" in m and "output" in m), m["model"])
 
 
