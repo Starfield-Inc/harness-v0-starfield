@@ -562,7 +562,8 @@ def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site)
     body, checks = _safe_body(summary, sha, harness_url, checks, pushed, ctx.env)
     body_file = ctx.workdir / f"{branch}.pr-body.md"
     body_file.write_text(body, encoding="utf-8")
-    title = scrub(f"Daily data: prices and V100 runs, {fmt_day(day)}", ctx.env)
+    # Fixed text and a date: there is nothing to scrub, and an alias such as v100 would break it.
+    title = f"Daily data: prices and V100 runs, {fmt_day(day)}"
     res = _sh(ctx.runner, ["gh", "pr", "create", *ctx.repo_args, "--base", "main", "--head", branch,
                               "--title", title, "--body-file", str(body_file), *(["--draft"] if is_draft(checks) else [])],
               cwd=ctx.workdir, env=ctx.gh_env, check=False)

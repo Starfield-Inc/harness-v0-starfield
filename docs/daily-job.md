@@ -58,17 +58,20 @@ The data commit is also safe to repeat. The job fetches `origin` and compares ea
 
 ### Pull request text
 
-The whole pull request text goes through the scrub in `harness/scrub.py` before it leaves the machine. This includes the title, the summary, the notes from the GPU step, and every check detail. The job then scans the text with the same privacy patterns it uses on the site files. Each line that still matches is replaced with `<removed>`, and the FAIL check `PR body privacy` drafts the pull request.
+The whole pull request text goes through the scrub in `harness/scrub.py` before it leaves the machine. This includes the summary, the notes from the GPU step, and every check detail. The title is fixed text and the date, so it does not go through the scrub. The job then scans the text with the privacy patterns of the run files. Each line that still matches is replaced with `<removed>`, and the FAIL check `PR body privacy` drafts the pull request.
 
 The scrub removes these things.
 
-- Each value of the host and path keys in the env file, and each word in `HARNESS_PRIVATE_TERMS`, in any case.
+- Each value of the host and path keys in the env file, and each word in `HARNESS_PRIVATE_TERMS`, in any case. The scrub removes a word only as a whole token, that is, when no letter or digit comes right before or after it. With the word `2222`, the link `commit/9f2222ab` stays. When the word is part of a host name or a path (letters, digits, dots, dashes, underscores and slashes around it), the scrub removes the whole host name or path. With the word `gpu`, all of `gpu-01.lan` goes.
+- The user name and password in a link, that is, everything between `://` and `@`, even in a link to github.com.
+- Any text of the form `something@something`, unless it is an email address on one of the safe hosts below. `root@node7.lan` goes. `344872025+esteban657@users.noreply.github.com` stays.
+- Text that looks like a secret, wherever it is: tokens that start with `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `sk-`, `xox` or `AKIA`, and private key blocks (`-----BEGIN ... PRIVATE KEY-----`).
 - IPv4 addresses.
 - Absolute paths with two or more parts, such as `/srv/bench/out`, and paths that start with `~/`. A relative path such as `harness/daily_gpu.py` stays.
 - Host names with two or more dots, unless they are on github.com, raw.githubusercontent.com, starfield.net, huggingface.co, pypi.org or docs.vllm.ai. Version numbers such as `0.19.1`, file names such as `content.golden.json`, and Python names such as `requests.exceptions.ConnectionError` stay.
 - Web links to any other host. Links to the hosts above, and site links such as `[corrections log](/research/corrections/)`, stay as they are.
 
-At the start of each run, the job runs `ssh -G` on the `HARNESS_GPU_SSH` alias. It adds the host name, user, port (when it is not 22) and key file paths to `HARNESS_PRIVATE_TERMS` for that run, so the scrub and the GPU step's privacy check catch the real host and account even when the text never names the alias. If `ssh -G` fails, the run goes on without them.
+At the start of each run, the job runs `ssh -G` on the `HARNESS_GPU_SSH` alias. It adds the host name, the alias, the base name of each key file (such as `bench_key`) and the user to `HARNESS_PRIVATE_TERMS` for that run. It adds the user only when the name has 4 or more characters and is not `root`, `ubuntu`, `admin` or `user`, because those are common words. It never adds the port, because a port is not secret and a port number matches parts of commit hashes. The job adds these words so the scrub and the GPU step's privacy check catch the real host and account even when the text never names the alias. If `ssh -G` fails, the run goes on without them.
 
 Everything the job prints also goes through the scrub. This includes check details, error text, the lock path and the report location, so the launchd log files hold no host or account details.
 

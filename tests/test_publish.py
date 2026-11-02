@@ -487,6 +487,12 @@ class PublishTests(unittest.TestCase):
         create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
         self.assertIn("--draft", create)
 
+    def test_an_alias_like_v100_leaves_the_fixed_title_alone(self):
+        self.s.env["HARNESS_GPU_SSH"] = "v100"
+        self.run_publish()
+        create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
+        self.assertEqual(create[create.index("--title") + 1], "Daily data: prices and V100 runs, 30 Oct 2026")
+
     def test_retry_after_the_harness_push_skips_commit_and_push(self):
         git(self.s.repo, "add", "-A")
         git(self.s.repo, "commit", "-q", "-m", "data")
