@@ -126,7 +126,7 @@ class CheckRunsTest(unittest.TestCase):
         self.assertStatus(self.results(record=record), "one GPU", FAIL)
 
     def test_privacy_fails_on_each_planted_pattern(self):
-        for planted in ("/data/steve/x", "/home/a", "/Users/a", "ssh root", "a@b", "10.1.2.3"):
+        for planted in ("/data/someone/x", "/home/a", "/Users/a", "ssh root", "a@b", "10.1.2.3"):
             with self.subTest(planted=planted):
                 self.assertStatus(self.results(raw_text=json.dumps({"x": planted})), "privacy", FAIL)
 
