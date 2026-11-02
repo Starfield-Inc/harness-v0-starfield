@@ -127,7 +127,8 @@ def render_script(host: Host, models: list[dict], stamp: str) -> str:
         'log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$LOG"; }',
         'stop() { log "STOP $*"; exit 1; }',
         'PGID=$(ps -o pgid= -p $$ | tr -d " ")',
-        f'echo "$PGID" > {q(str(p["pgid"]))}',
+        # the start time of the group leader lets the stop step tell this job from a later process with the same id
+        f'echo "$PGID" $(ps -o lstart= -p "$PGID") > {q(str(p["pgid"]))}',
         # only this job's process group: a vllm server someone else started on another GPU is left alone
         "cleanup() {",
         "  trap '' TERM",
@@ -234,11 +235,24 @@ def poll_argv(host, stamp):
     return _remote(host, f"cat {shlex.quote(str(host.paths(stamp)['log']))}")
 
 
+def _job_alive(host, stamp) -> str:
+    """Shell that sets pg to the job's process group and alive=yes only when the group leader
+    still has the start time saved in the pgid file and runs this launch's script."""
+    p, q = host.paths(stamp), shlex.quote
+    return (
+        f'pg=; st=; read -r pg st < {q(str(p["pgid"]))} 2> /dev/null; alive=no; '
+        'case "$pg" in ""|*[!0-9]*) ;; *) '
+        '[ -n "$st" ] && [ "$(echo $(ps -o lstart= -p "$pg" 2> /dev/null))" = "$st" ] && '
+        f'ps -o args= -p "$pg" 2> /dev/null | grep -qF -- {q(str(p["script"]))} && alive=yes ;; esac; ')
+
+
 def stop_argv(host, stamp):
-    pgid = shlex.quote(str(host.paths(stamp)["pgid"]))
+    log = shlex.quote(str(host.paths(stamp)["log"]))
     return _remote(host, (
-        f'pg=$(cat {pgid} 2> /dev/null); '
-        'case "$pg" in ""|*[!0-9]*) ;; *) kill -s TERM -- "-$pg" 2> /dev/null ;; esac; true'))
+        _job_alive(host, stamp)
+        + 'if [ "$alive" = yes ]; then kill -s TERM -- "-$pg" 2> /dev/null; else '
+        f'echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) stop step: no live job matches the pgid file, nothing sent" '
+        f'| tee -a {log}; fi; true'))
 
 
 def status_argv(host, stamp):
@@ -246,9 +260,8 @@ def status_argv(host, stamp):
     p, q = host.paths(stamp), shlex.quote
     return _remote(host, (
         f'if [ ! -e {q(str(p["log"]))} ]; then echo launch=gone; else '
-        f'pg=$(cat {q(str(p["pgid"]))} 2> /dev/null); alive=no; '
-        'case "$pg" in ""|*[!0-9]*) ;; *) kill -0 -- "-$pg" 2> /dev/null && alive=yes ;; esac; '
-        f'echo "launch=$alive"; cat {q(str(p["log"]))}; fi'))
+        + _job_alive(host, stamp)
+        + f'echo "launch=$alive"; cat {q(str(p["log"]))}; fi'))
 
 
 def pull_argv(host, stamp, dest: Path):
@@ -376,13 +389,11 @@ def _launch(runner, host, models, repo, stamp, checks) -> None:
         _call(runner, "write script", steps["write script"])
 
 
-def _collect(runner, host, models, repo, stamp, checks, sleep, clock, start, text, staging) -> list[Path]:
-    """Waits for the job unless `text` already ends it, then copies its out folder back.
+def _collect(runner, host, models, repo, stamp, checks, text, staging) -> list[Path]:
+    """Copies the out folder of a job whose log `text` has ended back.
 
     The copy goes to a staging folder that holds only this launch's files, so a copy back
     repeated after a partial one still finds every file of the launch. Returns the run files."""
-    if not _log_markers(text):
-        text = _wait_for_log(runner, host, stamp, sleep, clock, start)
     checks += _log_checks(text, models)
     if any(m.startswith("STOP") for m in _log_markers(text)):
         raise StepFailed("remote run", "the run script stopped, see the guard and exit checks")
@@ -545,13 +556,16 @@ def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
     try:
         if fresh:
             _call(runner, "start", start_argv(host, stamp))
-        csvs = _collect(runner, host, models, repo, stamp, checks, sleep, clock, record["started"], text, staging)
+        if not _log_markers(text):
+            text = _wait_for_log(runner, host, stamp, sleep, clock, record["started"])
+        csvs = _collect(runner, host, models, repo, stamp, checks, text, staging)
     except StepFailed as e:
         checks.append(Check(e.name, FAIL, e.detail))
-        try:
-            runner(stop_argv(host, stamp))
-        except OSError:
-            pass
+        if "ALL DONE" not in _log_markers(text):
+            try:
+                runner(stop_argv(host, stamp))
+            except OSError:
+                pass
         checks.append(_idle_check(runner, host))
         return _result(day, env, checks)
 

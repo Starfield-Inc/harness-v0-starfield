@@ -476,7 +476,6 @@ class DailyGpuTest(unittest.TestCase):
             "script stopped": dict(logs=[stop_log]),
             "five failed polls": dict(fail={"; cat ": (255, "connection timed out")}),
             "time limit": dict(logs=["2026-11-02T10:00:00Z start\n"]),
-            "copy back fails": dict(fail={"/out/ ": (23, "partial transfer")}),
         }
         for name, kwargs in cases.items():
             with self.subTest(name):
@@ -487,6 +486,12 @@ class DailyGpuTest(unittest.TestCase):
                 self.assertEqual(len(host.idle_checks()), 1)
                 self.assertGreater(host.calls.index(host.idle_checks()[0]), host.calls.index(host.stops()[0]))
                 self.assertEqual([c.status for c in self.status(result, "host idle")], [PASS])
+
+    def test_failure_after_all_done_does_not_stop_but_checks_idle(self):
+        host, result = self.go(FakeHost(self.repo, fail={"/out/ ": (23, "partial transfer")}))
+        self.assertEqual([c.status for c in self.status(result, "copy back")], [FAIL])
+        self.assertEqual(host.stops(), [])
+        self.assertEqual(len(host.idle_checks()), 1)
 
     def test_failure_before_start_does_not_stop_or_check_idle(self):
         host, _ = self.go(FakeHost(self.repo, tests_code=1))
@@ -629,7 +634,8 @@ class ScriptRunTest(unittest.TestCase):
         env = {**ENV, "HARNESS_GPU_WORKDIR": str(work), "HARNESS_GPU_ENV_PATH": str(tools)}
         host = daily_gpu.read_host(env)[0]
         Path(host.paths(STAMP)["out"]).mkdir(parents=True, exist_ok=True)
-        self.script = self.dir / "run.sh"
+        # the stop step checks that the job's command line names the launch folder
+        self.script = Path(host.paths(STAMP)["script"])
         self.host = host
         self.script.write_text(daily_gpu.render_script(host, MODELS[:1], STAMP))
         self.child_pid = self.dir / "child.pid"
@@ -675,6 +681,34 @@ class ScriptRunTest(unittest.TestCase):
         log = Path(self.host.paths(STAMP)["log"]).read_text()
         self.assertEqual([m for m in daily_gpu._log_markers(log) if m.startswith("STOP")],
                          ["STOP stopped by a signal or the time limit"])
+
+    def test_stop_and_status_leave_an_unrelated_process_alone(self):
+        pgid = Path(self.host.paths(STAMP)["pgid"])
+        Path(self.host.paths(STAMP)["log"]).write_text("2026-11-02T10:00:00Z start\n")
+        others = {"no start time": self.start(["sleep", "60"]),
+                  "other command": self.start(["sleep", "60"]),
+                  "other start time": self.start(["bash", "-c", "sleep 60; :", STAMP])}
+        for name, other in others.items():
+            with self.subTest(name):
+                started = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(other.pid)],
+                                                  capture_output=True, text=True).stdout.split())
+                pgid.write_text({"no start time": f"{other.pid}\n",
+                                 "other command": f"{other.pid} {started}\n",
+                                 "other start time": f"{other.pid} Mon Jan 1 00:00:00 2001\n"}[name])
+                subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]], check=True)
+                status = subprocess.run(["bash", "-c", daily_gpu.status_argv(self.host, STAMP)[-1]],
+                                        capture_output=True, text=True).stdout
+                time.sleep(0.3)
+                self.assertIsNone(other.poll())
+                self.assertTrue(status.startswith("launch=no\n"), status)
+
+    def test_running_job_reports_launch_yes(self):
+        self.start(["bash", str(self.script)], HOLD="1")
+        pid = self.child()
+        self.addCleanup(lambda: self.gone(pid) or os.kill(pid, 9))
+        status = subprocess.run(["bash", "-c", daily_gpu.status_argv(self.host, STAMP)[-1]],
+                                capture_output=True, text=True).stdout
+        self.assertTrue(status.startswith("launch=yes\n"), status)
 
     def test_cleanup_kills_a_process_that_ignores_term(self):
         job = self.start(["bash", str(self.script)], HOLD="1", IGNORE_TERM="1")
