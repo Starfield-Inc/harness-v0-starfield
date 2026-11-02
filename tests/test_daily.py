@@ -1,16 +1,19 @@
 import io
 import os
+import subprocess
 import tempfile
 import time
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from harness import daily, daily_prices
 from harness.checks import Check, FAIL, PASS
 from harness.daily_types import GpuResult, PublishResult
 
 DAY = date(2026, 10, 31)
+REAL_UTC_TODAY = daily.utc_today
 HEADER = ("read_date,provider,model,input_usd_per_1m,output_usd_per_1m,unit,"
           "source_url,page_date_if_shown,how_read,label")
 
@@ -33,6 +36,9 @@ class Case(unittest.TestCase):
         self.environ = {"HARNESS_DAILY_LOCK_DIR": str(self.lockdir)}
         self.calls = []
         self.root = root
+        today = mock.patch.object(daily, "utc_today", return_value=DAY)
+        today.start()
+        self.addCleanup(today.stop)
 
     def reader(self, argv):
         self.calls.append("read")
@@ -114,6 +120,40 @@ class TestRun(Case):
         self.assertEqual(self.calls, ["read"])
         self.assertEqual(code, 1)
 
+    def test_a_date_other_than_today_reads_no_prices(self):
+        daily.utc_today.return_value = date(2026, 11, 1)
+        code, out = self.main()
+        self.assertEqual(self.calls, ["gpu", "publish"])
+        self.assertIn("| price read | FAIL | the reader can only read today's UTC date |", out)
+        self.assertEqual(self.published_with[0].checks[0].status, FAIL)
+
+    def test_default_date_is_the_utc_date(self):
+        def now(tz=None):
+            utc = datetime(2026, 11, 2, 0, 30, tzinfo=timezone.utc)
+            return utc if tz is timezone.utc else datetime(2026, 11, 1, 19, 30)
+        with mock.patch.object(daily, "utc_today", REAL_UTC_TODAY), \
+                mock.patch.object(daily, "datetime", mock.Mock(now=now)):
+            daily.main(["--repo", str(self.repo)], out=io.StringIO(), environ=self.environ,
+                       fakes={"read_pages": self.reader, "gpu": self.gpu, "publish": self.publish})
+        self.assertEqual(self.published_with[0].day, date(2026, 11, 2))
+        self.assertEqual(self.calls[0], "read")
+
+    def test_dry_run_env_values_reach_the_steps_as_1(self):
+        seen = []
+        def gpu(day, repo, env):
+            seen.append(env.get("HARNESS_DRY_RUN"))
+            return self.gpu(day, repo, env)
+        for value in ("true", "Yes", "ON", "1"):
+            self.environ["HARNESS_DRY_RUN"] = value
+            self.main(gpu=gpu)
+        self.assertEqual(seen, ["1", "1", "1", "1"])
+        self.assertEqual(self.published_with[2]["HARNESS_DRY_RUN"], "1")
+
+    def test_publish_text_is_printed(self):
+        code, out = self.main(publish=lambda *a: PublishResult("", [], False, "dry run: would push nothing"))
+        self.assertIn("dry run: would push nothing", out)
+        self.assertEqual(code, 1)
+
     def test_existing_sheet_is_already_done(self):
         (self.repo / "data" / "prices" / f"price-sheet-{DAY}.csv").write_text(sheet_text(DAY))
         code, out = self.main()
@@ -153,13 +193,33 @@ class TestLock(Case):
         self.main()
         self.assertEqual(list(self.lockdir.iterdir()), [])
 
-    def test_stale_lock_is_ignored(self):
+    def old_lock(self, pid):
         lock = daily.Lock(self.repo, self.environ).path
-        lock.write_text("1\n")
+        lock.write_text(f"{pid}\n")
         old = time.time() - 7 * 3600
         os.utime(lock, (old, old))
+
+    def test_old_lock_of_a_dead_process_is_taken(self):
+        done = subprocess.Popen(["true"])
+        done.wait()
+        self.old_lock(done.pid)
         code, _ = self.main()
         self.assertEqual(code, 0)
+
+    def test_old_lock_of_a_live_process_blocks(self):
+        self.old_lock(os.getpid())
+        code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertIn("another run holds", out)
+        self.assertEqual(self.calls, [])
+
+    def test_a_lock_another_run_now_owns_is_kept(self):
+        lock = daily.Lock(self.repo, self.environ).path
+        def takeover(day, repo, env):
+            lock.write_text("4000000\n")
+            return self.gpu(day, repo, env)
+        self.main(gpu=takeover)
+        self.assertEqual(lock.read_text(), "4000000\n")
 
     def test_fresh_lock_blocks(self):
         daily.Lock(self.repo, self.environ).path.write_text("1\n")

@@ -2,15 +2,18 @@ import csv
 import json
 import subprocess
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 from harness.checks import FAIL, FLAG, PASS, Check
 from harness.daily_types import GpuResult, PriceResult
-from harness.publish import (PublishError, build_pr_body, compare_page_to_sheet,
+from harness import publish as publish_module
+from harness.publish import (build_pr_body, compare_page_to_sheet,
                              index_line, notes_from_page, price_changes, publish, render_price_page,
-                             scan_added_lines)
+                             run_command, scan_added_lines)
 from harness.price_table import COLUMNS
 
 DAY = date(2026, 10, 30)
@@ -44,13 +47,24 @@ class Fake:
         self.calls = []
         self.pr_list = "[]"
         self.fail_on = set()
+        self.git_fail = set()
+        self.gh_fail = set()
+        self.osascript_raises = False
         self.public = "200"
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append((list(argv), cwd, env))
         out = lambda text="", rc=0, err="": subprocess.CompletedProcess(argv, rc, text, err)
         if argv[0] == "git":
+            if " ".join(argv[:2]) in self.git_fail:
+                return out("", 128, "fatal: could not read from remote")
             return subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        if argv[0] == "osascript":
+            if self.osascript_raises:
+                raise OSError("no osascript here")
+            return out("")
+        if argv[:2] == ["gh", "pr"] and argv[2] in self.gh_fail:
+            return out("", 1, "gh: not logged in to github.com")
         if argv[:3] == ["gh", "pr", "list"]:
             return out(self.pr_list)
         if argv[:3] == ["gh", "pr", "create"]:
@@ -248,17 +262,58 @@ class PublishTests(unittest.TestCase):
         pushes = [a for a in self.fake.argvs() if a[:2] == ["git", "push"]]
         self.assertEqual(pushes, [["git", "push", "origin", "main"], ["git", "push", "-u", "origin", "daily-2026-10-30"]])
 
-    def test_a_force_push_command_is_refused_before_anything_is_pushed(self):
-        self.s.env["HARNESS_PUSH_CMD"] = "git push --force origin main"
-        with self.assertRaises(PublishError):
-            self.run_publish()
-        self.assertFalse([a for a in self.fake.argvs() if a[:2] == ["git", "push"]])
-        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+    def body(self, s=None):
+        s = s or self.s
+        return (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
 
-    def test_custom_push_command_is_used(self):
-        self.s.env["HARNESS_PUSH_CMD"] = "git push origin HEAD:main"
-        self.run_publish()
-        self.assertIn(["git", "push", "origin", "HEAD:main"], self.fake.argvs())
+    def harness_pushes(self, fake=None):
+        return [a for a in (fake or self.fake).argvs() if a[:2] == ["git", "push"] and "-u" not in a]
+
+    def test_push_command_from_env_is_ignored(self):
+        for i, cmd in enumerate(["git push --force-with-lease=main origin main", "git push -fu origin main",
+                                 "git -C . push origin +main", "git push --mirror origin",
+                                 "sh -c 'git push -f origin main'"]):
+            with self.subTest(cmd=cmd):
+                s, fake = Setup(Path(self.tmp.name) / f"cmd{i}"), Fake()
+                s.env["HARNESS_PUSH_CMD"] = cmd
+                publish(DAY, s.repo, s.price, s.gpu, s.env, runner=fake)
+                self.assertEqual(self.harness_pushes(fake), [["git", "push", "origin", "main"]])
+                self.assertFalse([a for a in fake.argvs() if a[0] == "sh" or "-C" in a])
+
+    def test_harness_off_main_pushes_nothing(self):
+        git(self.s.repo, "checkout", "-q", "-b", "other")
+        res = self.run_publish()
+        self.assertEqual(self.harness_pushes(), [])
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+        self.assertTrue(res.draft)
+        self.assertIn("| harness push | FAIL |", self.body())
+
+    def test_failed_input_check_pushes_nothing_and_opens_a_draft(self):
+        self.s.gpu = GpuResult(DAY, [self.s.run_csv], self.s.summary, [Check("runs bad", FAIL, "no")])
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertEqual(res.pr_urls, ["https://github.com/Starfield-Inc/starfield-website/pull/99"])
+        self.assertEqual(self.harness_pushes(), [])
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+        self.assertEqual(git(self.s.repo, "log", "--format=%s"), "first")
+        self.assertTrue(self.s.sheet.exists())
+        body = self.body()
+        self.assertTrue(body.startswith("Data was not pushed to the public repository because checks failed"))
+        self.assertIn("| runs bad | FAIL |", body)
+        self.assertNotIn("Harness commit:", body)
+        site = Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30"
+        self.assertTrue((site / "content/research/prices-2026-10-30.md").exists())
+
+    def test_missing_public_commit_drafts_after_the_push(self):
+        self.fake.public = "404"
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertEqual(git(self.s.harness_remote, "rev-parse", "main"), res.harness_sha)
+        body = self.body()
+        self.assertIn("| harness commit is public | FAIL |", body)
+        self.assertFalse(body.startswith("Data was not pushed"))
+        curl = next(a for a in self.fake.argvs() if a[0] == "curl")
+        self.assertEqual(curl[curl.index("--max-time") + 1], "30")
 
     def test_failed_check_opens_a_draft_with_the_warning(self):
         self.fake.fail_on = {"npm test"}
@@ -266,19 +321,133 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(res.draft)
         create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
         self.assertIn("--draft", create)
-        body = (Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
-        self.assertTrue(body.startswith("**Checks failed. Do not merge until fixed.**"))
+        body = self.body()
+        self.assertTrue(body.startswith("Data was not pushed to the public repository because checks failed"))
+        self.assertIn("**Checks failed. Do not merge until fixed.**", body)
         self.assertIn("| site tests | FAIL |", body)
         self.assertNotIn("/Users/someone", body)
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
 
-    def test_failing_input_check_and_missing_public_commit_both_hold_the_pr(self):
-        self.s.gpu = GpuResult(DAY, [self.s.run_csv], self.s.summary, [Check("runs bad", FAIL, "no")])
-        self.fake.public = "404"
+    def test_dry_run_does_nothing_for_every_true_value(self):
+        for i, value in enumerate(["1", "true", "YES", "On"]):
+            with self.subTest(value=value):
+                s, fake = Setup(Path(self.tmp.name) / f"dry{i}"), Fake()
+                s.env["HARNESS_DRY_RUN"] = value
+                s.env["HARNESS_PRIVATE_TERMS"] = "gpu-box-77"
+                gpu = GpuResult(DAY, [s.run_csv], s.summary, [Check("dry run", FLAG, "nothing was run")],
+                                notes=["ssh gpu-box-77 at 10.0.0.5 would run /home/me/venv/bin/vllm"])
+                res = publish(DAY, s.repo, s.price, gpu, s.env, runner=fake)
+                self.assertEqual(res.pr_urls, [])
+                self.assertEqual(fake.argvs(), [])
+                self.assertIn("dry run", res.text.lower())
+                for secret in ("10.0.0.5", "/home/me", "gpu-box-77", str(s.repo)):
+                    self.assertNotIn(secret, res.text)
+                self.assertEqual(git(s.harness_remote, "log", "--format=%s"), "first")
+                self.assertFalse(Path(s.env["HARNESS_SITE_WORKDIR"]).exists())
+
+    def test_pr_body_is_scrubbed_and_scanned(self):
+        self.s.env["HARNESS_PRIVATE_TERMS"] = "gpu-box-77"
+        self.s.gpu = GpuResult(DAY, [self.s.run_csv], self.s.summary,
+                               [Check("runs bad", FAIL, "copy from 10.1.2.3 on gpu-box-77 failed"),
+                                Check("vllm", FLAG, "the ssh session dropped once")],
+                               notes=["Run on gpu-box-77, files in /data/runs/today."])
         res = self.run_publish()
+        body = self.body()
+        for secret in ("10.1.2.3", "gpu-box-77", "/data/runs", "ssh"):
+            self.assertNotIn(secret, body)
+        self.assertIn("<removed>", body)
+        self.assertIn("| PR body privacy | FAIL |", body)
         self.assertTrue(res.draft)
-        body = (Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
-        self.assertIn("| harness commit is public | FAIL |", body)
-        self.assertIn("| runs bad | FAIL |", body)
+        create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
+        self.assertIn("--draft", create)
+
+    def test_retry_after_the_harness_push_skips_commit_and_push(self):
+        git(self.s.repo, "add", "-A")
+        git(self.s.repo, "commit", "-q", "-m", "data")
+        git(self.s.repo, "push", "-q", "origin", "main")
+        pushed = git(self.s.harness_remote, "rev-parse", "main")
+        fake = Fake()
+        res = publish(DAY, self.s.repo, self.s.price, self.s.gpu, self.s.env, runner=fake)
+        self.assertEqual(res.pr_urls, ["https://github.com/Starfield-Inc/starfield-website/pull/99"])
+        self.assertEqual(self.harness_pushes(fake), [])
+        self.assertFalse([c for c in fake.calls if c[0][:1] == ["git"] and "commit" in c[0] and c[1] == self.s.repo])
+        self.assertIn(["git", "fetch", "origin"], fake.argvs())
+        self.assertEqual(git(self.s.harness_remote, "rev-parse", "main"), pushed)
+        self.assertEqual(res.harness_sha, pushed)
+
+    def test_retry_after_a_local_commit_pushes_without_a_new_commit(self):
+        git(self.s.repo, "add", "-A")
+        git(self.s.repo, "commit", "-q", "-m", "data")
+        local = git(self.s.repo, "rev-parse", "HEAD")
+        res = self.run_publish()
+        self.assertEqual(self.harness_pushes(), [["git", "push", "origin", "main"]])
+        self.assertEqual(git(self.s.harness_remote, "rev-parse", "main"), local)
+        self.assertEqual(res.harness_sha, local)
+
+    def test_a_branch_without_a_pr_gets_its_pr(self):
+        seed = Path(self.tmp.name) / "seed"
+        git(seed, "push", "-q", "origin", "main:daily-2026-10-30")
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, ["https://github.com/Starfield-Inc/starfield-website/pull/99"])
+        create = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "create"])
+        self.assertEqual(create[create.index("--head") + 1], "daily-2026-10-30")
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+        self.assertFalse([a for a in self.fake.argvs() if a[:2] in (["git", "push"], ["git", "clone"])])
+
+    def test_gh_failure_writes_the_report_locally(self):
+        seed = Path(self.tmp.name) / "seed"
+        git(seed, "push", "-q", "origin", "main:daily-2026-10-30")
+        self.fake.gh_fail = {"create"}
+        logdir = Path(self.tmp.name) / "logs"
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(logdir)
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        log = (logdir / "harness-daily-2026-10-30.log").read_text()
+        self.assertIn("| pull request | FAIL |", log)
+        self.assertTrue([a for a in self.fake.argvs() if a[0] == "osascript"])
+
+    def test_gh_lookup_failure_writes_the_report_locally(self):
+        self.fake.gh_fail = {"list"}
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(Path(self.tmp.name) / "logs")
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        self.assertIn("| pull request lookup | FAIL |",
+                      (Path(self.tmp.name) / "logs/harness-daily-2026-10-30.log").read_text())
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+
+    def test_missing_sheet_opens_no_pr_and_writes_the_report_locally(self):
+        self.s.sheet.unlink()
+        self.s.env["HARNESS_PRIVATE_TERMS"] = "gpu-box-77"
+        logdir = Path(self.tmp.name) / "logs"
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(logdir)
+        self.s.price = PriceResult(DAY, self.s.sheet, self.s.prev_sheet,
+                                   [Check("price read", FAIL, "reader failed on gpu-box-77 at /Users/me/x")])
+        self.fake.osascript_raises = True
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        self.assertFalse([a for a in self.fake.argvs()
+                          if a[:2] in (["git", "push"], ["git", "clone"], ["git", "commit"]) or a[:3] == ["gh", "pr", "create"]])
+        log = (logdir / "harness-daily-2026-10-30.log").read_text()
+        self.assertIn("| price read | FAIL |", log)
+        self.assertNotIn("gpu-box-77", log)
+        self.assertNotIn("/Users/me", log)
+        self.assertTrue([a for a in self.fake.argvs() if a[0] == "osascript"])
+        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+
+    def test_no_previous_sheet_opens_no_pr(self):
+        self.s.prev_sheet.unlink()
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(Path(self.tmp.name) / "logs")
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        self.assertIn("previous price sheet", (Path(self.tmp.name) / "logs/harness-daily-2026-10-30.log").read_text())
+
+    def test_no_gpu_result_still_opens_a_draft_with_the_price_page(self):
+        res = publish(DAY, self.s.repo, self.s.price, None, self.s.env, runner=self.fake)
+        self.assertTrue(res.draft)
+        self.assertIn("| gpu step | FAIL | gpu step did not run |", self.body())
+        self.assertEqual(self.harness_pushes(), [])
+        site = Path(self.s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30"
+        self.assertTrue((site / "content/research/prices-2026-10-30.md").exists())
 
     def test_second_call_returns_the_existing_pr_and_changes_nothing(self):
         first = self.run_publish()
@@ -293,19 +462,31 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(remote_before, (git(self.s.harness_remote, "rev-parse", "main"),
                                          git(self.s.site_remote, "rev-parse", "daily-2026-10-30")))
 
-    def test_a_branch_without_a_pr_stops_with_nothing_changed(self):
-        seed = Path(self.tmp.name) / "seed"
-        git(seed, "push", "-q", "origin", "main:daily-2026-10-30")
-        with self.assertRaises(PublishError):
-            self.run_publish()
-        self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
-        self.assertFalse([a for a in self.fake.argvs() if a[:2] == ["git", "push"]])
-
     def test_price_change_is_flagged(self):
         s = Setup(Path(self.tmp.name) / "changed", changed=True)
         self.run_publish(s)
         body = (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
         self.assertIn("- price changes: xAI grok-4.7: output $6 -> $7", body)
+
+
+class RunCommandTests(unittest.TestCase):
+    def test_a_hung_command_is_stopped(self):
+        start = time.monotonic()
+        res = run_command(["sleep", "5"], timeout=0.3)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("timed out", res.stderr)
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_npm_install_and_tests_get_longer(self):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen[" ".join(argv)] = kw["timeout"]
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with mock.patch.object(publish_module.subprocess, "run", fake_run):
+            for argv in (["npm", "ci"], ["npm", "test"], ["git", "status"], ["npm", "run", "content:check"]):
+                run_command(argv)
+        self.assertEqual(seen, {"npm ci": 1800, "npm test": 1800, "git status": 900, "npm run content:check": 900})
 
 
 if __name__ == "__main__":

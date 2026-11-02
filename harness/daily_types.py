@@ -28,3 +28,8 @@ class PublishResult:
     harness_sha: str
     pr_urls: list[str]
     draft: bool
+    text: str = ""
+
+
+def is_dry_run(env: dict) -> bool:
+    return env.get("HARNESS_DRY_RUN", "").strip().lower() in ("1", "true", "yes", "on")
