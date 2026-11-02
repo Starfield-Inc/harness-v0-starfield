@@ -215,15 +215,29 @@ class TestRun(Case):
             return GpuResult(day, [], None, [Check("gpu runs", FAIL, "benchacct on port 2201 refused")])
         code, out = self.main(gpu=gpu)
         self.assertIn(["ssh", "-G", "gpubox"], self.runs)
-        self.assertEqual(seen["terms"], ["existing-term", "benchacct", "gpu-7.cluster.example.org", "2201",
-                                         "~/.ssh/bench_key"])
+        self.assertEqual(seen["terms"], ["existing-term", "benchacct", "gpu-7.cluster.example.org", "bench_key",
+                                         "gpubox"])
         self.assertEqual(self.published_with[2]["HARNESS_PRIVATE_TERMS"].split(",")[1], "benchacct")
         self.assertNotIn("benchacct", out)
-        self.assertNotIn("2201", out)
 
-    def test_parse_ssh_config_skips_the_default_port(self):
-        self.assertEqual(daily.ssh_terms("user u1x\nport 22\nhostname h.example.com\nidentityfile ~/.ssh/id_rsa\n"),
-                         ["u1x", "h.example.com", "~/.ssh/id_rsa"])
+    def test_ports_and_default_users_are_not_terms(self):
+        config = ("user root\nhostname gpu-01.lan\nport 2222\nidentityfile ~/.ssh/id_ed25519\n"
+                  "identityfile ~/.ssh/bench_key\n")
+        self.assertEqual(daily.ssh_terms(config), ["gpu-01.lan", "id_ed25519", "bench_key"])
+        for user in ("root", "ubuntu", "admin", "user", "abc"):
+            self.assertEqual(daily.ssh_terms(f"user {user}\n"), [])
+        self.assertEqual(daily.ssh_terms("user benchacct\nport 22\n"), ["benchacct"])
+
+    def test_a_port_term_does_not_break_a_commit_link(self):
+        self.environ["HARNESS_GPU_SSH"] = "gpu"
+        self.ssh_g = "user root\nhostname gpu-01.lan\nport 2222\n"
+        link = "https://github.com/o/r/commit/9f2222ab"
+        code, out = self.main(gpu=lambda day, repo, env: GpuResult(
+            day, [], None, [Check("runs", FAIL, f"see {link}, root login to gpu-01.lan failed")]))
+        self.assertIn(link, out)
+        self.assertIn("root login", out)
+        self.assertNotIn("gpu-01", out)
+        self.assertNotIn("<redacted>-01", out)
 
     def test_ssh_config_failure_does_not_stop_the_run(self):
         self.environ["HARNESS_GPU_SSH"] = "gpubox"

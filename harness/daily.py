@@ -22,6 +22,7 @@ from harness.publish import run_command, write_report
 from harness.scrub import scrub
 
 STALE_LOCK_SECONDS = 6 * 3600
+DEFAULT_USERS = {"root", "ubuntu", "admin", "user"}
 
 
 class LockHeld(Exception):
@@ -137,18 +138,26 @@ class Lock:
 
 
 def ssh_terms(ssh_config: str) -> list[str]:
-    """Values from `ssh -G` output that name the host or the account. Port 22 says nothing."""
+    """Values from `ssh -G` output that name the host or the account. A port is not secret, and a short or
+    default user name such as root is a common word, so neither becomes a term."""
     terms = []
     for line in ssh_config.splitlines():
         key, _, value = line.strip().partition(" ")
         value = value.strip()
-        if value and (key in ("user", "hostname", "identityfile") or (key == "port" and value != "22")):
+        if key == "identityfile":
+            value = Path(value).name
+        elif key == "user":
+            value = "" if len(value) < 4 or value.lower() in DEFAULT_USERS else value
+        elif key != "hostname":
+            continue
+        if value and value not in terms:
             terms.append(value)
     return terms
 
 
 def add_ssh_terms(env, runner):
-    """Add the real host, user, port and key file behind the ssh alias to the words the scrub removes."""
+    """Add the real host, user and key file name behind the ssh alias, and the alias, to the words the
+    scrub removes."""
     alias = env.get("HARNESS_GPU_SSH", "").strip()
     if not alias:
         return
@@ -159,7 +168,7 @@ def add_ssh_terms(env, runner):
     if res.returncode != 0:
         return
     terms = [t.strip() for t in env.get("HARNESS_PRIVATE_TERMS", "").split(",") if t.strip()]
-    for t in ssh_terms(res.stdout):
+    for t in [*ssh_terms(res.stdout), alias]:
         if t not in terms:
             terms.append(t)
     env["HARNESS_PRIVATE_TERMS"] = ",".join(terms)
