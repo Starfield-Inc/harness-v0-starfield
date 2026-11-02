@@ -23,6 +23,7 @@ For each page: the provider, the address, the unit the page uses, a text the pag
 - `unit_check` must match the page text. If the page says "per 1K tokens" and the config says per 1M, the run stops. It does not guess.
 - `step` (Google) holds patterns for a scheduled price change. When the page shows one, the reader adds a row named `<model> from <date>`. When the page shows none, no extra row is written. If it finds only the input or only the output, or two different dates, it stops.
 - `after` (OpenAI) starts the search after a marker, so the first price table (Standard) is used.
+- `page_date_optional` (Google) makes the page date optional. When the page shows a date, the reader writes it as usual. When the page shows none, the reader writes `none` in `page_date_if_shown` and goes on. Without this flag, a missing page date stops the run. Google's page stopped showing its "Last updated" line on 2 Nov 2026.
 
 Labels are `published by <Provider>`. Where the provider is a host (DeepInfra, Together AI, Groq, Fireworks), the label names that host.
 
@@ -53,7 +54,7 @@ Any of these stops the run with a message that names the provider and the model,
 - a price is zero or below;
 - the input price is above the output price;
 - the unit check fails or the config names an unknown unit;
-- a page date pattern is set but the page has no date;
+- a page date pattern is set, `page_date_optional` is not set, and the page has no date;
 - a carried entry has no `carried_from` date (or no model, price, source or reason);
 - a carried model is on the page again;
 - the run crosses midnight UTC, so the rows would not share one date.

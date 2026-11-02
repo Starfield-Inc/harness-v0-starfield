@@ -152,6 +152,7 @@ A FLAG does not draft the pull request. It asks a person to look before merging.
 
 - `price changes`. A provider changed an input or output price since the previous sheet. The detail lists each change. Carried-forward rows are not compared.
 - `carried rows`. The sheet has rows a provider no longer lists, kept with an earlier price. The detail names each row and the date of its price.
+- `page dates`. A provider had a page date on the previous sheet and has `none` today. The detail names the provider and the last date seen. Carried-forward rows are not compared.
 - `speed band`. Output tokens per second moved more than 2 percent from the mean of the earlier days.
 - `token band`. Output tokens per run moved more than 5 percent from the mean of the earlier days.
 
