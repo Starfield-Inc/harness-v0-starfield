@@ -8,13 +8,18 @@ HARNESS_DRY_RUN=1 lists the commands and runs none of them.
 
 Every step goes through `runner`, a callable that takes an argv list and returns
 (returncode, stdout). A failed step gives a GpuResult with a FAIL Check. It does not raise.
-A day that already has a run file for every model is not run again. Check details and
-notes go through scrub() because they end up in a PR body.
+Check details and notes go through scrub() because they end up in a PR body.
+
+Before the job starts, a launch record is written to HARNESS_STATE_DIR (default: a daily-state
+folder next to the repo, never inside it, because results/ is public). A rerun on the same day
+resumes that launch instead of starting a new one, and a finished launch lists its run files in
+the record's "done" list, so a day is recognised as done even when its runs crossed midnight UTC.
 """
 import csv
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -44,11 +49,13 @@ POLL_SECONDS = 60
 TOTAL_LIMIT_SECONDS = 90 * 60
 MODEL_LIMIT_SECONDS = 25 * 60
 MAX_POLL_FAILURES = 5
+KILL_AFTER_SECONDS = 10
 RUNNER_TIMEOUT_SECONDS = 900
 SSH_OPTIONS = ["-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"]
 ENV_KEYS = ("HARNESS_GPU_SSH", "HARNESS_GPU_WORKDIR", "HARNESS_GPU_ENV_PATH", "HARNESS_GPU_HF_HOME")
 MODEL_ID = re.compile(r"[A-Za-z0-9._/-]+")
 REVISION = re.compile(r"[0-9a-f]{40}")
+STAMP = re.compile(r"\d{8}T\d{6}Z")
 
 
 class StepFailed(Exception):
@@ -122,7 +129,20 @@ def render_script(host: Host, models: list[dict], stamp: str) -> str:
         'PGID=$(ps -o pgid= -p $$ | tr -d " ")',
         f'echo "$PGID" > {q(str(p["pgid"]))}',
         # only this job's process group: a vllm server someone else started on another GPU is left alone
-        "cleanup() { trap '' TERM; [ -n \"$PGID\" ] && kill -s TERM -- \"-$PGID\" 2> /dev/null; }",
+        "cleanup() {",
+        "  trap '' TERM",
+        '  [ -n "$PGID" ] || return',
+        '  kill -s TERM -- "-$PGID" 2> /dev/null',
+        f"  for _ in $(seq {KILL_AFTER_SECONDS}); do",
+        # pgrep writes to a file, not a pipe, so no helper process of this check is in the group;
+        # the script and the timeout that leads the group do not count
+        '    pgrep -g "$PGID" > "$LOG.pg"',
+        '    grep -qvx -e "$$" -e "$PGID" "$LOG.pg" || return 0',
+        "    sleep 1",
+        "  done",
+        '  log "cleanup: KILL"',
+        '  kill -s KILL -- "-$PGID"',
+        "}",
         "trap cleanup EXIT",
         "trap 'stop \"stopped by a signal or the time limit\"' TERM",
         "guard() {",
@@ -147,7 +167,7 @@ def render_script(host: Host, models: list[dict], stamp: str) -> str:
             "guard",
             f"log {q(f'model {mid}: guard ok')}",
             # --foreground keeps the run in the job's process group, so the cleanup also reaches its server
-            f'timeout --foreground {MODEL_LIMIT_SECONDS} {run_cmd} >> "$LOG.out" 2>&1',
+            f'timeout -k 30 --foreground {MODEL_LIMIT_SECONDS} {run_cmd} >> "$LOG.out" 2>&1',
             "rc=$?",
             f'log {q(f"model {mid}: exit")} "$rc"',
             f'[ "$rc" -eq 0 ] || stop {q(f"model {mid} failed")}',
@@ -197,7 +217,7 @@ def start_argv(host, stamp):
     log = str(p["log"])
     return _remote(host, (
         f": > {q(log)} && : > {q(log + '.out')} && "
-        f"{{ nohup setsid timeout {TOTAL_LIMIT_SECONDS} bash {q(str(p['script']))} > /dev/null 2>&1 < /dev/null & }}"))
+        f"{{ nohup setsid timeout -k 30 {TOTAL_LIMIT_SECONDS} bash {q(str(p['script']))} > /dev/null 2>&1 < /dev/null & }}"))
 
 
 def poll_argv(host, stamp):
@@ -209,6 +229,16 @@ def stop_argv(host, stamp):
     return _remote(host, (
         f'pg=$(cat {pgid} 2> /dev/null); '
         'case "$pg" in ""|*[!0-9]*) ;; *) kill -s TERM -- "-$pg" 2> /dev/null ;; esac; true'))
+
+
+def status_argv(host, stamp):
+    """Prints launch=gone, launch=yes (job still running) or launch=no, then the log."""
+    p, q = host.paths(stamp), shlex.quote
+    return _remote(host, (
+        f'if [ ! -e {q(str(p["log"]))} ]; then echo launch=gone; else '
+        f'pg=$(cat {q(str(p["pgid"]))} 2> /dev/null); alive=no; '
+        'case "$pg" in ""|*[!0-9]*) ;; *) kill -0 -- "-$pg" 2> /dev/null && alive=yes ;; esac; '
+        f'echo "launch=$alive"; cat {q(str(p["log"]))}; fi'))
 
 
 def pull_argv(host, stamp, dest: Path):
@@ -252,8 +282,8 @@ def _log_markers(text):
     return [m.group(1) for line in text.splitlines() if (m := re.match(r"^\S+ (ALL DONE|STOP.*)$", line))]
 
 
-def _wait_for_log(runner, host, stamp, sleep, clock) -> str:
-    start, failures = clock(), 0
+def _wait_for_log(runner, host, stamp, sleep, clock, start) -> str:
+    failures = 0
     while True:
         try:
             code, text = runner(poll_argv(host, stamp))
@@ -330,18 +360,24 @@ def _launch(runner, host, models, repo, stamp, checks) -> None:
         _call(runner, "write script", steps["write script"])
 
 
-def _collect(runner, host, models, repo, stamp, checks, sleep, clock) -> list[Path]:
-    """Starts the job, waits for it and copies its out folder back. Returns the run files received."""
-    _call(runner, "start", start_argv(host, stamp))
-    text = _wait_for_log(runner, host, stamp, sleep, clock)
+def _collect(runner, host, models, repo, stamp, checks, sleep, clock, start, text, staging) -> list[Path]:
+    """Waits for the job unless `text` already ends it, then copies its out folder back.
+
+    The copy goes to a staging folder that holds only this launch's files, so a copy back
+    repeated after a partial one still finds every file of the launch. Returns the run files."""
+    if not _log_markers(text):
+        text = _wait_for_log(runner, host, stamp, sleep, clock, start)
     checks += _log_checks(text, models)
     if any(m.startswith("STOP") for m in _log_markers(text)):
         raise StepFailed("remote run", "the run script stopped, see the guard and exit checks")
+    staging.mkdir(parents=True, exist_ok=True)
+    _call(runner, "copy back", pull_argv(host, stamp, staging))
     results = repo / "results"
-    results.mkdir(exist_ok=True)
-    before = set(results.glob("vllm-*.csv"))
-    _call(runner, "copy back", pull_argv(host, stamp, results))
-    return sorted(set(results.glob("vllm-*.csv")) - before)
+    try:
+        shutil.copytree(staging, results, dirs_exist_ok=True)
+    except OSError as e:
+        raise StepFailed("copy back", f"cannot copy the run files into results: {e}")
+    return sorted(results / p.name for p in staging.glob("vllm-*.csv"))
 
 
 def _models_in(csvs) -> set[str]:
@@ -396,6 +432,43 @@ def _finish(day, env, repo, models, csvs, checks, write_summary=True) -> GpuResu
     return _result(day, env, checks, csvs, summary, _date_notes(csvs, day))
 
 
+def state_dir(repo: Path, env) -> Path:
+    if env.get("HARNESS_STATE_DIR"):
+        return Path(env["HARNESS_STATE_DIR"])
+    return repo.resolve().parent / "daily-state"
+
+
+def _read_record(path: Path) -> dict | None:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    # the stamp becomes part of remote paths
+    if not (isinstance(record, dict) and STAMP.fullmatch(str(record.get("stamp")))
+            and isinstance(record.get("started"), (int, float)) and isinstance(record.get("done"), list)):
+        raise ValueError("not a launch record")
+    return record
+
+
+def _write_record(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _done_files(repo: Path, day: date, record: dict | None, models) -> list[Path]:
+    """The run files of a finished launch of `day`, or [] when the day still has to run."""
+    if record is None:
+        # days run before launch records existed
+        files = sorted((repo / "results").glob(f"vllm-{day.strftime('%Y%m%d')}T*.csv"))
+    else:
+        files = [repo / "results" / name for name in record.get("done", [])]
+    if files and all(p.exists() for p in files) and {m["id"] for m in models} <= _models_in(files):
+        return files
+    return []
+
+
 def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
         sleep=time.sleep, clock=time.time) -> GpuResult:
     repo = Path(repo)
@@ -410,21 +483,53 @@ def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
         return _result(day, env, [Check("dry run", FLAG, "nothing was run")],
                        notes=print_plan(day, repo, env).splitlines())
 
-    done = sorted((repo / "results").glob(f"vllm-{day.strftime('%Y%m%d')}T*.csv"))
-    if {m["id"] for m in models} <= _models_in(done):
+    record_path = state_dir(repo, env) / f"launch-{day.strftime('%Y%m%d')}.json"
+    try:
+        record = _read_record(record_path)
+    except (OSError, ValueError) as e:
+        return _result(day, env, [Check("launch record", FAIL, f"cannot read {record_path.name}: {e}")])
+    done = _done_files(repo, day, record, models)
+    if done:
         summary = repo / "data" / "speed" / f"speed-{day.isoformat()}.csv"
         checks = [Check("gpu runs", PASS, f"already done: {len(done)} run files for {day.isoformat()}, "
                                           "the host was not used")]
         return _finish(day, env, repo, models, done, checks, write_summary=not summary.exists())
 
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
     checks: list[Check] = []
+    text = ""
+    if record is not None:
+        try:
+            state, _, text = _call(runner, "earlier launch", status_argv(host, record["stamp"])).partition("\n")
+        except StepFailed as e:
+            return _result(day, env, [Check(e.name, FAIL, e.detail)])
+        markers = _log_markers(text)
+        if state == "launch=gone":
+            record = None
+        elif any(m.startswith("STOP") for m in markers) or (state == "launch=no" and not markers):
+            how = "stopped" if markers else "ended without ALL DONE or STOP"
+            return _result(day, env, [*_log_checks(text, models), Check("earlier launch", FAIL, (
+                f"{day.isoformat()} was already attempted (launch {record['stamp']}) and the job {how}. "
+                f"It is not started again on the same day. To run it again, delete {record_path.name} "
+                "from the state folder (HARNESS_STATE_DIR, or daily-state next to the repo)."))])
+    fresh = record is None
+    if fresh:
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
+        try:
+            _launch(runner, host, models, repo, stamp, checks)
+            record = {"stamp": stamp, "day": day.isoformat(), "models": [m["id"] for m in models],
+                      "started": clock(), "done": []}
+            try:
+                _write_record(record_path, record)
+            except OSError as e:
+                raise StepFailed("launch record", f"cannot write {record_path.name}: {e}")
+        except StepFailed as e:
+            return _result(day, env, [*checks, Check(e.name, FAIL, e.detail)])
+    stamp = record["stamp"]
+    staging = record_path.parent / stamp
     try:
-        _launch(runner, host, models, repo, stamp, checks)
-    except StepFailed as e:
-        return _result(day, env, [*checks, Check(e.name, FAIL, e.detail)])
-    try:
-        csvs = _collect(runner, host, models, repo, stamp, checks, sleep, clock)
+        if fresh:
+            _call(runner, "start", start_argv(host, stamp))
+        csvs = _collect(runner, host, models, repo, stamp, checks, sleep, clock, record["started"], text, staging)
     except StepFailed as e:
         checks.append(Check(e.name, FAIL, e.detail))
         try:
@@ -437,6 +542,13 @@ def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
     checks.append(Check("runs copied back", PASS if len(csvs) == len(models) else FAIL,
                         f"{len(csvs)} run files received for {len(models)} models"))
     checks.append(_idle_check(runner, host))
+    if {m["id"] for m in models} <= _models_in(csvs):
+        try:
+            _write_record(record_path, {**record, "done": [p.name for p in csvs]})
+        except OSError as e:
+            checks.append(Check("launch record", FAIL, f"cannot mark {record_path.name} done: {e}"))
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
     return _finish(day, env, repo, models, csvs, checks)
 
 
