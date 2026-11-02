@@ -99,6 +99,23 @@ class ParseTests(unittest.TestCase):
         rows, _ = read(cfg)
         self.assertEqual(rows[0]["page_date_if_shown"], "none")
 
+    def test_optional_page_date_is_used_when_the_page_shows_it(self):
+        cfg = config()
+        cfg["pages"][0]["page_date_optional"] = True
+        rows, _ = read(cfg)
+        self.assertEqual({r["page_date_if_shown"] for r in rows}, {"2026-10-27"})
+
+    def test_optional_page_date_missing_says_none_and_reads_the_prices(self):
+        cfg = config()
+        cfg["pages"][0]["page_date_optional"] = True
+        rows, _ = read(cfg, page("no_page_date"))
+        self.assertEqual({r["page_date_if_shown"] for r in rows}, {"none"})
+        self.assertEqual([r["model"] for r in rows], [r["model"] for r in read()[0]])
+
+    def test_required_page_date_missing_stops_the_read(self):
+        with self.assertRaisesRegex(pr.PriceReadError, "Acme: page date not found"):
+            read(html=page("no_page_date"))
+
     def test_no_step_row_when_page_shows_no_change(self):
         html = page("good")
         html = html.replace(" through November 30, 2026.\n$4.00 starting December 1, 2026.", "")

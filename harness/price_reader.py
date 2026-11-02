@@ -194,8 +194,12 @@ def _read_page(page, raw, read_date):
             f"but the config says the unit is {page.get('unit', 'usd_per_1m')}")
     page_date = "none"
     if page.get("page_date"):
-        match = _search(page["page_date"], text, provider, "page date")
-        page_date = _iso_date(_group(match, "date"), provider)
+        if page.get("page_date_optional"):
+            match = re.search(page["page_date"], text)
+        else:
+            match = _search(page["page_date"], text, provider, "page date")
+        if match:
+            page_date = _iso_date(_group(match, "date"), provider)
     sources = {"text": text, "html": html.unescape(raw), "markdown": raw}
     rows = []
     for model in page["models"]:
