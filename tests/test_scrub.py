@@ -23,6 +23,32 @@ class ScrubTest(unittest.TestCase):
     def test_keeps_version_numbers(self):
         self.assertEqual(scrub("vllm 0.19.1 torch 2.10.0", {}), "vllm 0.19.1 torch 2.10.0")
 
+    def test_traceback_tail_loses_remote_paths_and_unknown_hosts(self):
+        tail = (
+            'Traceback (most recent call last):\n'
+            '  File "/scratch/jobs/run7/venv/lib/python3.12/site-packages/urllib3/connection.py", line 198, in _new_conn\n'
+            '    sock = connection.create_connection(\n'
+            'requests.exceptions.ConnectionError: HTTPSConnectionPool(host=\'gpu-node-3.cluster.internal\', port=443)\n'
+            'rsync: change_dir "/srv/bench/out" failed; see harness/daily_gpu.py and tests/test_x.py\n'
+            'vllm 0.19.1 transformers 4.57.6 on node7.lab.example.org\n')
+        out = scrub(tail, {})
+        for bad in ("/scratch/jobs", "gpu-node-3", "cluster.internal", "/srv/bench", "node7", "lab.example.org"):
+            self.assertNotIn(bad, out)
+        for kept in ("requests.exceptions.ConnectionError", "HTTPSConnectionPool", "0.19.1", "4.57.6",
+                     "harness/daily_gpu.py", "tests/test_x.py", "Traceback (most recent call last)"):
+            self.assertIn(kept, out)
+
+    def test_public_links_stay_intact(self):
+        text = ("Harness commit: abc (https://github.com/Starfield-Inc/harness-v0-starfield/blob/main/data/prices/a.csv) "
+                "see [corrections log](/research/corrections/) and https://docs.vllm.ai/en/v0.19.1/serving.html "
+                "and https://huggingface.co/Qwen/Qwen3-8B")
+        self.assertEqual(scrub(text, {}), text)
+
+    def test_private_url_and_home_path_are_removed(self):
+        out = scrub("fetch https://box.internal.corp.net:8000/v1 with key ~/.ssh/id_ed25519", {})
+        self.assertNotIn("box.internal", out)
+        self.assertNotIn("id_ed25519", out)
+
 
 if __name__ == "__main__":
     unittest.main()
