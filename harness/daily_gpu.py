@@ -362,6 +362,7 @@ def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
         **EXPECTED,
         "model_revisions": {m["id"]: m["revision"] for m in models},
         "prompt_set_sha256": _prompt_hash(repo),
+        "private_terms": [t.strip() for t in env.get("HARNESS_PRIVATE_TERMS", "").split(",") if t.strip()],
     }
     checks += check_runs(csvs, expected, _previous_summaries(repo, day))
     return _result(day, checks, csvs, summary)

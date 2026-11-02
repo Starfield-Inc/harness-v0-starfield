@@ -73,6 +73,7 @@ The job reads its settings from an env file outside the repository. Nothing in t
 | `HARNESS_DAILY_ENV` | The path of the env file itself. |
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
 | `HARNESS_DRY_RUN` | When set, the job makes no push and opens no pull request. |
+| `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never appear in a result file, for example a host name. The privacy check fails if one does. |
 
 ## Run it by hand
 

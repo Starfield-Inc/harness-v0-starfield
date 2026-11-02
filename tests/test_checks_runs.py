@@ -126,10 +126,16 @@ class CheckRunsTest(unittest.TestCase):
         self.assertStatus(self.results(record=record), "one GPU", FAIL)
 
     def test_privacy_fails_on_each_planted_pattern(self):
-        for planted in ("/data/steve/x", "/home/a", "/Users/a", "ssh root", "a@b", "10.1.2.3",
-                        "Manhattan", "Steve"):
+        for planted in ("/data/steve/x", "/home/a", "/Users/a", "ssh root", "a@b", "10.1.2.3"):
             with self.subTest(planted=planted):
                 self.assertStatus(self.results(raw_text=json.dumps({"x": planted})), "privacy", FAIL)
+
+    def test_privacy_fails_on_a_private_term_given_by_the_caller(self):
+        expected = {**EXPECTED, "private_terms": ["examplehost"]}
+        with tempfile.TemporaryDirectory() as d:
+            path = write_run(Path(d), raw_text='{"x": "ExampleHost"}')
+            checks = {c.name.split(" [")[0]: c for c in check_runs([path], expected, [])}
+        self.assertEqual(checks["privacy"].status, FAIL)
 
     def test_privacy_fails_on_planted_text_in_csv_and_record(self):
         rows = [dict(GOOD_ROW, repeat_index=i, cli_call="ssh 10.1.2.3") for i in (1, 2, 3)]
