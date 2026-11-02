@@ -5,11 +5,18 @@
 --date defaults to today's UTC date. Prices can only be read for that date.
 Every step reports its checks even when an earlier step failed. Publish always runs
 (unless skipped) because it opens a draft PR that carries the failures.
-Exit code: 0 if a PR was opened, 1 if not, 2 for bad arguments.
+Exit code: 0 if a PR was opened, 1 if not or on any error, 2 for bad arguments or an unreadable env file.
+An error never prints a traceback: main() prints the scrubbed message and writes the local report.
 """
 import argparse
 import os
 import sys
+
+if __name__ == "__main__":
+    # Set before the other imports, so even an import error under the wrong Python prints no traceback
+    # with local paths to the launchd error log. main() catches every Exception itself.
+    sys.excepthook = lambda kind, value, tb: print(f"harness.daily stopped: {kind.__name__}", file=sys.stderr)
+
 import tempfile
 import time
 from datetime import date, datetime, timezone
@@ -82,6 +89,10 @@ def load_env(environ) -> dict:
 class Lock:
     def __init__(self, repo: Path, env: dict, runner=run_command):
         folder = Path(env.get("HARNESS_DAILY_LOCK_DIR") or tempfile.gettempdir())
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            folder = Path(tempfile.gettempdir())
         self.path = folder / f"harness-daily-{Path(repo).resolve().name}.lock"
         self.runner = runner
         self.content = None
@@ -250,10 +261,30 @@ def _day(text):
         raise argparse.ArgumentTypeError(f"not a date in YYYY-MM-DD form: {text!r}")
 
 
+def _stopped(day, text, env, runner, code):
+    """Print only the scrubbed message (stderr is the launchd error log), keep the report and notify."""
+    text = scrub(text, env)
+    print(text, file=sys.stderr)
+    try:
+        write_report(day, text + "\n", env, runner, f"The {day} run stopped with an error.")
+    except Exception:
+        pass
+    return code
+
+
 def main(argv=None, out=None, environ=None, fakes=None) -> int:
     out = out or sys.stdout
     fakes = fakes or {}
     runner = fakes.get("runner", run_command)
+    env, day = dict(os.environ if environ is None else environ), utc_today()
+    try:
+        return _main(argv, out, env, fakes, runner)
+    except Exception as e:
+        return _stopped(day, f"The daily run stopped with an error: {type(e).__name__}: {e}", env, runner, 1)
+
+
+def _main(argv, out, env, fakes, runner) -> int:
+    """env is updated in place, so main() can scrub with the env file's values when this raises."""
     parser = argparse.ArgumentParser(prog="harness.daily", description=__doc__.splitlines()[0])
     parser.add_argument("--date", type=_day, default=None)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parent.parent)
@@ -266,10 +297,9 @@ def main(argv=None, out=None, environ=None, fakes=None) -> int:
         return int(e.code or 0)
     args.date = args.date or utc_today()
     try:
-        env = load_env(os.environ if environ is None else environ)
-    except OSError as e:
-        print(scrub(f"cannot read the env file: {e}", {}), file=sys.stderr)
-        return 2
+        env.update(load_env(env))
+    except (OSError, UnicodeDecodeError) as e:
+        return _stopped(args.date, f"The daily run did not start: cannot read the env file: {e}", env, runner, 2)
     if is_dry_run(env):
         # daily_gpu reads only "1", so every accepted spelling is passed on as "1".
         env["HARNESS_DRY_RUN"] = "1"

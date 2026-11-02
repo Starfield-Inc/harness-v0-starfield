@@ -41,7 +41,14 @@ The job needs the day's price sheet and an earlier sheet to build the price page
 
 If the data was already pushed when the error happened, for example when the push of the site branch failed, the report says "The data is already public" and names the harness commit.
 
-The job also writes the local report and shows the notification in two other cases. One is when a step (prices, GPU or publish) stops with an error, which the job records as the FAIL check `price step`, `gpu step` or `publish step`. The other is when the job does not start because another run holds the lock.
+The job also writes the local report and shows the notification in these other cases.
+
+- A step (prices, GPU or publish) stops with an error. The job records it as the FAIL check `price step`, `gpu step` or `publish step`.
+- The job does not start because another run holds the lock.
+- Any other error stops the job. The job prints one scrubbed line to standard error and exits with code 1. It never prints a Python traceback, because standard error is the launchd error log and a traceback holds local paths. Even an import error, for example under the wrong Python, prints only `harness.daily stopped:` and the error name.
+- The env file cannot be read, because it is missing or is not UTF-8. The job prints one scrubbed line and exits with code 2.
+
+If the folder in `HARNESS_DAILY_LOCK_DIR` does not exist, the job makes it. If the job cannot make it, it puts the lock in the system temp directory.
 
 If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), the job records the FAIL check `gpu step` and still opens a draft pull request with the price page.
 

@@ -387,6 +387,38 @@ class TestEnv(Case):
         code, _ = self.main()
         self.assertEqual(code, 2)
 
+    def test_env_file_that_is_not_utf8_exits_2_with_a_scrubbed_message(self):
+        f = self.root / "daily.env"
+        f.write_bytes(b"TOKEN=\xff\xfe\n")
+        self.environ["HARNESS_DAILY_ENV"] = str(f)
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            code, _ = self.main()
+        self.assertEqual(code, 2)
+        self.assertIn("cannot read the env file", err.getvalue())
+        self.assertNotIn(str(self.root), err.getvalue() + self.report())
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertEqual(len(self.notifications()), 1)
+
+
+class TestTopLevelErrors(Case):
+    def test_missing_lock_folder_is_made(self):
+        self.environ["HARNESS_DAILY_LOCK_DIR"] = str(self.root / "no" / "such" / "locks")
+        code, _ = self.main()
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "no" / "such" / "locks").is_dir())
+
+    def test_any_error_is_scrubbed_reported_and_exits_1(self):
+        boom = RuntimeError(f"broke in {self.root}/secret/place")
+        with mock.patch.object(daily, "run_day", side_effect=boom), mock.patch("sys.stderr", io.StringIO()) as err:
+            code, out = self.main()
+        self.assertEqual(code, 1)
+        self.assertIn("RuntimeError", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+        for text in (err.getvalue(), out, self.report()):
+            self.assertNotIn(str(self.root), text)
+        self.assertIn("RuntimeError", self.report())
+        self.assertEqual(len(self.notifications()), 1)
+
 
 class TestDailyPrices(Case):
     def test_previous_sheet_is_newest_earlier(self):
