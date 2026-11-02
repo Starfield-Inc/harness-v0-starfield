@@ -1,26 +1,31 @@
-"""Publish the day's data: push the harness commit, then open a pull request on the site repo.
+"""Publish the day's data: commit it to the harness repo, build the site branch, run every check,
+push the harness commit only if no check failed, then open a pull request on the site repo.
 
-Every git, gh, curl and npm call goes through one injectable runner. The module never merges,
-never force-pushes and never deploys.
+Every git, gh, curl, npm and osascript call goes through one injectable runner. The module never
+merges, never force-pushes and never deploys.
 """
 import csv
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
+import tempfile
 from datetime import date
 from pathlib import Path
+from typing import NamedTuple
 
 from harness.checks import FAIL, FLAG, PASS, Check, is_draft, render_markdown
 from harness.checks.runs import PRIVACY_PATTERNS
-from harness.daily_types import GpuResult, PriceResult, PublishResult
+from harness.daily_types import GpuResult, PriceResult, PublishResult, is_dry_run
+from harness.scrub import scrub
 from harness.price_table import (DEFAULT_MAIN_MODELS, build_table, change_text, load_main_models,
                                  read_sheet, split_steps, step_note)
 
 AUTHOR = ["-c", "user.name=esteban657", "-c", "user.email=344872025+esteban657@users.noreply.github.com"]
-DEFAULT_PUSH_CMD = "git push origin main"
+HARNESS_PUSH = ["git", "push", "origin", "main"]
+NOT_PUSHED = "Data was not pushed to the public repository because checks failed."
+LONG_COMMANDS = (["npm", "ci"], ["npm", "test"])
 SCRIPT_READS_FROM = date(2026, 10, 28)
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
@@ -36,11 +41,16 @@ class PublishError(RuntimeError):
     pass
 
 
-def run_command(argv, cwd=None, env=None):
+def run_command(argv, cwd=None, env=None, timeout=None):
     # UPDATE_GOLDEN refuses to run when CI is set, so CI never reaches the child.
     child_env = {k: v for k, v in os.environ.items() if k != "CI"}
     child_env.update(env or {})
-    return subprocess.run(argv, cwd=cwd, env=child_env, capture_output=True, text=True)
+    if timeout is None:
+        timeout = 1800 if list(argv[:2]) in LONG_COMMANDS else 900
+    try:
+        return subprocess.run(argv, cwd=cwd, env=child_env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout} s")
 
 
 def _sh(runner, argv, cwd=None, env=None, check=True):
@@ -249,40 +259,86 @@ def compare_page_to_sheet(page_text, today_sheet, previous_sheet, main_models=DE
     return problems
 
 
+def _private_labels(text):
+    """Privacy patterns that match the text. A GitHub link is public, so its text is not scanned."""
+    text = re.sub(r"https://github\.com/[^\s)\"]+", "", text)
+    return [label for label, pat in PRIVACY_PATTERNS.items() if re.search(pat, text, re.IGNORECASE)]
+
+
 def scan_added_lines(diff_text):
-    """Privacy patterns over the added lines of a diff. A GitHub link is public, so its text is not scanned."""
     hits = []
     for line in diff_text.splitlines():
         if line.startswith("+") and not line.startswith("+++"):
-            text = re.sub(r"https://github\.com/[^\s)\"]+", "", line[1:])
-            hits += [label for label, pat in PRIVACY_PATTERNS.items() if re.search(pat, text, re.IGNORECASE)]
+            hits += _private_labels(line[1:])
     return sorted(set(hits))
 
 
+def _remove_private_lines(text):
+    lines = text.split("\n")
+    kept = ["<removed>" if _private_labels(line) else line for line in lines]
+    return "\n".join(kept), sum(a != b for a, b in zip(lines, kept))
+
+
 # ---------------------------------------------------------------------------------------------
-# PR body
+# PR body and the local report
 # ---------------------------------------------------------------------------------------------
 
-def build_pr_body(summary_lines, harness_sha, harness_url, checks):
-    lines = []
+def build_pr_body(summary_lines, harness_sha, harness_url, checks, pushed=True):
+    lines = [NOT_PUSHED, ""] if not pushed else []
     if is_draft(checks):
         lines += ["**Checks failed. Do not merge until fixed.**", ""]
-    lines += [*summary_lines, "", f"Harness commit: {harness_sha} ({harness_url}/commit/{harness_sha})", "",
-              "## Checks", "", render_markdown(checks), "", "## Needs your look", ""]
+    lines += [*summary_lines, ""]
+    if harness_sha:
+        lines += [f"Harness commit: {harness_sha} ({harness_url}/commit/{harness_sha})", ""]
+    lines += ["## Checks", "", render_markdown(checks), "", "## Needs your look", ""]
     flags = [c for c in checks if c.status == FLAG]
     lines += [f"- {c.name}: {c.detail}" for c in flags] or ["Nothing flagged."]
     return "\n".join(lines) + "\n"
+
+
+def _safe_body(summary, harness_sha, harness_url, checks, pushed, env):
+    """Scrub the body, then blank any line the privacy patterns still match. Returns (body, checks)."""
+    body, removed = _remove_private_lines(scrub(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
+    if removed:
+        checks = [*checks, Check("PR body privacy", FAIL,
+                                 f"{removed} lines matched the privacy patterns and were replaced with <removed>")]
+        body, _ = _remove_private_lines(scrub(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
+    return body, checks
+
+
+def _report_locally(day, summary, checks, env, runner):
+    """No pull request could be opened: keep the report on this machine and tell the person at the desk."""
+    text = scrub("\n".join([*summary, "No pull request was opened.", "", render_markdown(checks), ""]), env)
+    folder = Path(env.get("HARNESS_DAILY_LOG_DIR") or tempfile.gettempdir())
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"harness-daily-{day.isoformat()}.log"
+    path.write_text(text, encoding="utf-8")
+    message = f"No pull request was opened for {fmt_day(day)}. The report is in {path.name}."
+    try:
+        runner(["osascript", "-e", f'display notification "{message}" with title "Harness daily job"'])
+    except Exception:
+        pass
+    return PublishResult("", [], is_draft(checks), f"{text}\nThe report is in {path}.\n")
+
+
+def _dry_run_text(day, price_result, gpu_result, checks, env):
+    names = [Path(price_result.sheet).name, *(Path(f).name for c in gpu_result.run_csvs for f in run_file_group(c))]
+    if gpu_result.summary:
+        names.append(Path(gpu_result.summary).name)
+    return scrub("\n".join([
+        f"Dry run for {fmt_day(day)} (HARNESS_DRY_RUN is set): no commit, no push, no clone and no pull request.",
+        "Without the dry run, publish would:",
+        f"- commit {_join(names)} to the harness repository, and push it to main only if no check failed;",
+        f"- open a pull request from branch daily-{day.isoformat()} on the site repository.",
+        "", render_markdown(checks), ""]), env)
 
 
 # ---------------------------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------------------------
 
-def _existing_pr(runner, branch, slug, workdir, gh_env):
-    repo_args = ["--repo", slug] if slug else []
-    res = _sh(runner, ["gh", "pr", "list", *repo_args, "--head", branch, "--state", "all",
-                       "--json", "url,isDraft,body", "--limit", "5"], cwd=workdir, env=gh_env)
-    prs = json.loads(res.stdout or "[]")
+def _existing_pr(gh_list_stdout):
+    prs = json.loads(gh_list_stdout or "[]")
     if not prs:
         return None
     pr = prs[0]
@@ -290,21 +346,51 @@ def _existing_pr(runner, branch, slug, workdir, gh_env):
     return PublishResult(m.group(1) if m else "", [pr["url"]], bool(pr.get("isDraft")))
 
 
-def _commit_and_push_harness(day, repo, price_result, gpu_result, env, runner):
-    rel = lambda p: str(Path(p).resolve().relative_to(repo.resolve()))
+def _data_groups(day, price_result, gpu_result):
     when = fmt_day(day)
     groups = [([price_result.sheet], f"Add price sheet read by the script on {when}")]
     if gpu_result.summary:
         files = [f for c in gpu_result.run_csvs for f in run_file_group(c)] + [gpu_result.summary]
-        names = _join(_model_names(gpu_result.run_csvs))
-        groups.append((files, f"Add vLLM runs of {names} on {when}, with a summary file"))
+        groups.append((files, f"Add vLLM runs of {_join(_model_names(gpu_result.run_csvs))} on {when}, with a summary file"))
+    return groups
+
+
+def _commit_harness(repo, groups, runner):
+    """Commit each group unless HEAD already holds it. Returns True if a commit was made."""
+    made = False
     for files, message in groups:
-        paths = [rel(f) for f in files]
+        paths = [str(Path(f).resolve().relative_to(repo.resolve())) for f in files]
+        dirty = _sh(runner, ["git", "status", "--porcelain", "--", *paths], cwd=repo).stdout.strip()
+        tracked = _sh(runner, ["git", "ls-files", "--error-unmatch", "--", *paths], cwd=repo, check=False).returncode == 0
+        if not dirty and tracked:
+            continue
         _sh(runner, ["git", "add", "--", *paths], cwd=repo)
-        if _sh(runner, ["git", "diff", "--cached", "--quiet", "--", *paths], cwd=repo, check=False).returncode != 0:
-            _sh(runner, ["git", *AUTHOR, "commit", "-m", message, "--", *paths], cwd=repo)
-    _sh(runner, shlex.split(env.get("HARNESS_PUSH_CMD") or DEFAULT_PUSH_CMD), cwd=repo)
-    return _sh(runner, ["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        _sh(runner, ["git", *AUTHOR, "commit", "-m", message, "--", *paths], cwd=repo)
+        made = True
+    return made
+
+
+def _push_harness(repo, runner):
+    branch = _sh(runner, ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=False).stdout.strip()
+    if branch != "main":
+        return Check("harness push", FAIL, f"the harness checkout is on '{branch}', not main, so nothing was pushed")
+    fetch = _sh(runner, ["git", "fetch", "origin"], cwd=repo, check=False)
+    if fetch.returncode != 0:
+        return Check("harness push", FAIL, f"`git fetch origin` failed: {_tail(fetch.stderr or fetch.stdout)}")
+    if _sh(runner, ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], cwd=repo, check=False).returncode == 0:
+        return Check("harness push", PASS, "origin main already holds the data commit")
+    res = _sh(runner, HARNESS_PUSH, cwd=repo, check=False)
+    if res.returncode != 0:
+        return Check("harness push", FAIL, f"`git push origin main` failed: {_tail(res.stderr or res.stdout)}")
+    return Check("harness push", PASS, "data commit pushed to origin main")
+
+
+def _public_check(runner, slug, sha):
+    code = _sh(runner, ["curl", "-s", "--max-time", "30", "-o", "/dev/null", "-w", "%{http_code}",
+                        f"https://api.github.com/repos/{slug}/commits/{sha}"], check=False).stdout.strip()
+    if code == "200":
+        return Check("harness commit is public", PASS, f"{sha[:7]} found on the public harness repo")
+    return Check("harness commit is public", FAIL, f"{sha[:7]} not found on the public harness repo (HTTP {code or 'none'})")
 
 
 def _latest_price_page(clone, before):
@@ -355,20 +441,66 @@ def _add_to_pages_test(clone, day):
     path.write_text(new, encoding="utf-8")
 
 
-def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult, env, runner=run_command) -> PublishResult:
-    repo, branch = Path(repo), f"daily-{day.isoformat()}"
-    url, workdir = _require(env, "HARNESS_SITE_REPO_URL"), Path(_require(env, "HARNESS_SITE_WORKDIR"))
-    gh_env = {"GH_CONFIG_DIR": _require(env, "HARNESS_GH_CONFIG_DIR")}
-    site_slug = _github_slug(url)
-    workdir.mkdir(parents=True, exist_ok=True)
+class _Site(NamedTuple):
+    env: dict
+    runner: object
+    workdir: Path
+    repo_args: list
+    gh_env: dict
 
-    existing = _existing_pr(runner, branch, site_slug, workdir, gh_env)
+
+def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site):
+    body, checks = _safe_body(summary, sha, harness_url, checks, pushed, ctx.env)
+    body_file = ctx.workdir / f"{branch}.pr-body.md"
+    body_file.write_text(body, encoding="utf-8")
+    title = scrub(f"Daily data: prices and V100 runs, {fmt_day(day)}", ctx.env)
+    res = _sh(ctx.runner, ["gh", "pr", "create", *ctx.repo_args, "--base", "main", "--head", branch,
+                              "--title", title, "--body-file", str(body_file), *(["--draft"] if is_draft(checks) else [])],
+              cwd=ctx.workdir, env=ctx.gh_env, check=False)
+    if res.returncode != 0:
+        failed = Check("pull request", FAIL, f"`gh pr create` failed: {_tail(res.stderr or res.stdout)}")
+        return _report_locally(day, summary, [*checks, failed], ctx.env, ctx.runner)
+    return PublishResult(sha, [res.stdout.strip().splitlines()[-1]], is_draft(checks))
+
+
+def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, env, runner=run_command) -> PublishResult:
+    """Never raises for a failed input step: without a price sheet it writes a local report instead of a PR."""
+    repo, branch = Path(repo), f"daily-{day.isoformat()}"
+    gpu_result = gpu_result or GpuResult(day, [], None, [Check("gpu step", FAIL, "gpu step did not run")])
+    inputs = [*price_result.checks, *gpu_result.checks]
+    if is_dry_run(env):
+        return PublishResult("", [], is_draft(inputs), _dry_run_text(day, price_result, gpu_result, inputs, env))
+
+    url, workdir = _require(env, "HARNESS_SITE_REPO_URL"), Path(_require(env, "HARNESS_SITE_WORKDIR"))
+    site_slug = _github_slug(url)
+    ctx = _Site(env, runner, workdir, ["--repo", site_slug] if site_slug else [],
+                {"GH_CONFIG_DIR": _require(env, "HARNESS_GH_CONFIG_DIR")})
+    workdir.mkdir(parents=True, exist_ok=True)
+    header = [f"Daily data for {fmt_day(day)}."]
+
+    found = _sh(runner, ["gh", "pr", "list", *ctx.repo_args, "--head", branch, "--state", "all",
+                         "--json", "url,isDraft,body", "--limit", "5"], cwd=workdir, env=ctx.gh_env, check=False)
+    if found.returncode != 0:
+        failed = Check("pull request lookup", FAIL, f"`gh pr list` failed: {_tail(found.stderr or found.stdout)}")
+        return _report_locally(day, header, [*inputs, failed], env, runner)
+    existing = _existing_pr(found.stdout)
     if existing:
         return existing
-    if _sh(runner, ["git", "ls-remote", "--heads", url, branch], check=True).stdout.strip():
-        raise PublishError(f"branch {branch} exists on the site repo but has no pull request; nothing changed")
+    if _sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip():
+        retry = Check("site checks", FAIL, f"not run again: the pull request is opened from the {branch} branch an earlier run pushed")
+        summary = [*header, f"An earlier run pushed the {branch} branch but opened no pull request. "
+                            "This pull request is opened from that branch as it is."]
+        return _open_pr(day, branch, summary, [*inputs, retry], "", "", True, ctx)
 
-    sha = _commit_and_push_harness(day, repo, price_result, gpu_result, env, runner)
+    missing = [Check(name, FAIL, f"{Path(path).name} does not exist, so no price page can be built")
+               for name, path in (("price sheet", price_result.sheet), ("previous price sheet", price_result.previous_sheet))
+               if not Path(path).exists()]
+    if missing:
+        return _report_locally(day, header, [*inputs, *missing], env, runner)
+
+    base = _sh(runner, ["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+    committed = _commit_harness(repo, _data_groups(day, price_result, gpu_result), runner)
+    sha = _sh(runner, ["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
 
     clone = workdir / branch
     if clone.exists():
@@ -420,14 +552,6 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult, env, ru
     own.append(Check("price page matches sheet", FAIL if problems else PASS,
                      "; ".join(problems[:5]) if problems else
                      f"{sum(len(v) for v in parse_page_tables(page_text).values())} rows compared cell for cell"))
-
-    slug = _github_slug(repo_url) or ""
-    code = _sh(runner, ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                        f"https://api.github.com/repos/{slug}/commits/{sha}"], check=False).stdout.strip()
-    own.append(Check("harness commit is public", PASS if code == "200" else FAIL,
-                     f"{sha[:7]} found on the public harness repo" if code == "200"
-                     else f"{sha[:7]} not found on the public harness repo (HTTP {code or 'none'})"))
-
     own += _run_site_steps(runner, clone, repo, sha)
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
@@ -436,25 +560,27 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult, env, ru
     own.append(Check("no host details in site files", FAIL if hits else PASS,
                      f"private text matched: {', '.join(hits)}" if hits else "added lines scanned, no private text"))
 
-    checks = [*price_result.checks, *gpu_result.checks, *own, *flags_extra]
-    draft = is_draft(checks)
-    summary = [f"Daily data for {fmt_day(day)}.",
+    pushed = not is_draft([*inputs, *own])
+    if pushed:
+        own.append(_push_harness(repo, runner))
+        pushed = own[-1].status == PASS
+        if pushed:
+            own.append(_public_check(runner, _github_slug(repo_url) or "", sha))
+    elif committed:
+        # Leave no unpushed data commit behind, or a later clean day would push it.
+        _sh(runner, ["git", "reset", "-q", base], cwd=repo)
+
+    checks = [*inputs, *own, *flags_extra]
+    summary = [*header,
                f"Adds the {fmt_day(day)} price page and lists it on the prices index. {change_sentence(previous_day, changes)}"]
     summary.append(f"Adds the speed summary CSV for {fmt_day(day)} and pins it in the harness manifest. "
                    "The Model Watch post is not changed." if gpu_result.summary else "No GPU runs were added today.")
     summary += list(gpu_result.notes)
     summary.append("The cover image for the new price page is not made here. It needs `npm run graphics` on a machine with Chrome.")
-    body = build_pr_body(summary, sha, harness_url, checks)
 
     _sh(runner, ["git", *AUTHOR, "commit", "-m", f"Daily price pages: prices read {fmt_day(day)}"], cwd=clone)
     _sh(runner, ["git", "push", "-u", "origin", branch], cwd=clone)
-    body_file = workdir / f"{branch}.pr-body.md"
-    body_file.write_text(body, encoding="utf-8")
-    title = f"Daily data: prices and V100 runs, {fmt_day(day)}"
-    res = _sh(runner, ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title,
-                       "--body-file", str(body_file), *(["--draft"] if draft else [])], cwd=clone, env=gh_env)
-    pr_url = res.stdout.strip().splitlines()[-1]
-    return PublishResult(sha, [pr_url], draft)
+    return _open_pr(day, branch, summary, checks, sha if pushed else "", harness_url, pushed, ctx)
 
 
 def _run_site_steps(runner, clone, repo, sha):
