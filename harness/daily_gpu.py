@@ -261,8 +261,9 @@ def stop_argv(host, stamp):
     return _remote(host, (
         _job_alive(host, stamp)
         + 'if [ "$alive" = yes ]; then kill -s TERM -- "-$pg" 2> /dev/null; else '
-        f'echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) stop step: no live job matches the pgid file, nothing sent" '
-        f'| tee -a {log}; fi; true'))
+        'msg="$(date -u +%Y-%m-%dT%H:%M:%SZ) stop step: no live job matches the pgid file, nothing sent"; '
+        # a log made here would make a launch that never started look like one that ended without ALL DONE
+        f'if [ -f {log} ]; then echo "$msg" | tee -a {log}; else echo "$msg"; fi; fi; true'))
 
 
 def status_argv(host, stamp):

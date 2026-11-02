@@ -764,6 +764,24 @@ class ScriptRunTest(unittest.TestCase):
                 self.assertIsNone(other.poll())
                 self.assertTrue(status.startswith("launch=no\n"), status)
 
+    def test_stop_step_does_not_create_the_log_of_a_launch_that_never_started(self):
+        log = Path(self.host.paths(STAMP)["log"])
+        status = lambda: subprocess.run(["bash", "-c", daily_gpu.status_argv(self.host, STAMP)[-1]],
+                                        capture_output=True, text=True).stdout
+        self.assertEqual(status().strip(), "launch=gone")
+        done = subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]],
+                              capture_output=True, text=True, check=True)
+        self.assertIn("nothing sent", done.stdout)
+        self.assertFalse(log.exists())
+        self.assertEqual(status().strip(), "launch=gone")
+
+    def test_stop_step_appends_to_a_log_that_exists(self):
+        log = Path(self.host.paths(STAMP)["log"])
+        log.write_text("2026-11-02T10:00:00Z start\n")
+        subprocess.run(["bash", "-c", daily_gpu.stop_argv(self.host, STAMP)[-1]], check=True,
+                       capture_output=True)
+        self.assertIn("nothing sent", log.read_text())
+
     def test_running_job_reports_launch_yes(self):
         self.start(["bash", str(self.script)], HOLD="1")
         pid = self.child()
