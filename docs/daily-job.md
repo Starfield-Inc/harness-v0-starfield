@@ -54,10 +54,15 @@ If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), t
 
 ### Running the job again on the same day
 
-A second run on the same day is safe. Before it changes anything, the job looks for the day's pull request on the site repository. If the pull request exists, the job returns it and pushes nothing. It reads the harness commit that the branch's manifest pins and says whether the data was pushed.
+A second run on the same day is safe. Before it changes anything, the job looks for the day's pull request on the site repository with `gh pr list --head daily-YYYY-MM-DD`. A fork can open a pull request from a branch with the same name, so the job asks gh for `isCrossRepository` and `headRefName`, and uses only a pull request that comes from the site repository itself and from that branch. It ignores every other one, and the pull request text and the report name each one it ignored. It never changes a pull request that is not its own.
+
+If the job's own pull request exists, the job returns it and pushes nothing. It reads the harness commit that the branch's manifest pins and says whether the data was pushed.
 
 - If `origin/main` holds that commit, the result says "Harness data pushed" and names the commit.
-- If it does not, the result says "Harness data not pushed" and the pull request stays a draft. If someone marked it ready for review, the job turns it back into a draft with `gh pr ready --undo`.
+- If it does not, the result says "Harness data not pushed" and the pull request stays a draft.
+- If the job cannot read the manifest, or cannot fetch `origin`, the result says that it is not known whether the data was pushed, and the pull request stays a draft.
+
+In the last two cases, if someone marked the pull request ready for review, the job turns it back into a draft with `gh pr ready --undo`.
 
 If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way. The job opens a draft pull request from that branch as it is, with the same pushed or not pushed sentence. The FAIL check `site checks` says that the site checks were not run again.
 

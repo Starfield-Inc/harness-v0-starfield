@@ -366,9 +366,19 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
 # Steps
 # ---------------------------------------------------------------------------------------------
 
-def _existing_pr(gh_list_stdout):
-    prs = json.loads(gh_list_stdout or "[]")
-    return prs[0] if prs else None
+PR_FIELDS = "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName"
+
+
+def _existing_pr(gh_list_stdout, branch):
+    """The job's own pull request for the branch, and the URLs of others with the same branch name.
+    A fork can open a pull request from a branch of the same name, so only one from this repository counts."""
+    own, others = None, []
+    for pr in json.loads(gh_list_stdout or "[]"):
+        if pr.get("isCrossRepository") is False and pr.get("headRefName") == branch and own is None:
+            own = pr
+        else:
+            others.append(pr.get("url", ""))
+    return own, others
 
 
 def _branch_data(branch, repo, ctx):
@@ -400,13 +410,14 @@ def _data_status(sha, pushed):
             "public repository. The pull request must stay a draft.")
 
 
-def _found_pr(pr, branch, repo, ctx):
+def _found_pr(pr, branch, repo, ctx, ignored):
     sha, pushed, _ = _branch_data(branch, repo, ctx)
     draft = bool(pr.get("isDraft")) or pushed is not True
-    if pushed is False and not pr.get("isDraft"):
+    if pushed is not True and not pr.get("isDraft"):
         _sh(ctx.runner, ["gh", "pr", "ready", pr["url"], "--undo", *ctx.repo_args], cwd=ctx.workdir, env=ctx.gh_env,
             check=False)
-    text = scrub(f"Found the existing pull request {pr['url']}. {_data_status(sha, pushed)}\n", ctx.env)
+    text = scrub(" ".join([*ignored, f"Found the existing pull request {pr['url']}.", _data_status(sha, pushed)]) + "\n",
+                 ctx.env)
     return PublishResult(sha if pushed else "", [pr["url"]], draft, text)
 
 
@@ -606,13 +617,15 @@ def _publish(day, repo, price_result, gpu_result, env, runner, progress):
     header = [f"Daily data for {fmt_day(day)}."]
 
     found = _sh(runner, ["gh", "pr", "list", *ctx.repo_args, "--head", branch, "--state", "all",
-                         "--json", "url,isDraft,body", "--limit", "5"], cwd=workdir, env=ctx.gh_env, check=False)
+                         "--json", PR_FIELDS, "--limit", "5"], cwd=workdir, env=ctx.gh_env, check=False)
     if found.returncode != 0:
         failed = Check("pull request lookup", FAIL, f"`gh pr list` failed: {_tail(found.stderr or found.stdout)}")
         return _report_locally(day, header, [*inputs, failed], env, runner)
-    existing = _existing_pr(found.stdout)
+    existing, others = _existing_pr(found.stdout, branch)
+    ignored = [f"Ignored the pull request {u} from another repository, which has the same branch name." for u in others]
+    header += ignored
     if existing:
-        return _found_pr(existing, branch, repo, ctx)
+        return _found_pr(existing, branch, repo, ctx, ignored)
     if _sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip():
         sha, pushed, harness_url = _branch_data(branch, repo, ctx)
         retry = Check("site checks", FAIL, f"not run again: the pull request is opened from the {branch} branch an earlier run pushed")

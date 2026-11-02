@@ -146,6 +146,13 @@ def temp_refs(repo):
 
 
 DATA_PUSH = ["git", "push", "origin", "daily-data-2026-10-30:main"]
+PR_URL = "https://github.com/Starfield-Inc/starfield-website/pull/99"
+
+
+def own_pr(url, draft, fork=False):
+    """One entry of `gh pr list --json`, as gh prints it."""
+    return {"number": int(url.rsplit("/", 1)[1]), "url": url, "isDraft": draft, "isCrossRepository": fork,
+            "headRepositoryOwner": {"login": "someone" if fork else "Starfield-Inc"}, "headRefName": "daily-2026-10-30"}
 
 
 class PageTests(unittest.TestCase):
@@ -589,7 +596,7 @@ class PublishTests(unittest.TestCase):
 
     def test_second_call_returns_the_existing_pr_and_changes_nothing(self):
         first = self.run_publish()
-        self.fake.pr_list = json.dumps([{"url": first.pr_urls[0], "isDraft": False, "body": "x"}])
+        self.fake.pr_list = json.dumps([own_pr(first.pr_urls[0], draft=False)])
         before = len(self.fake.calls)
         remote_before = git(self.s.harness_remote, "rev-parse", "main"), git(self.s.site_remote, "rev-parse", "daily-2026-10-30")
         second = self.run_publish()
@@ -607,13 +614,31 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(first.draft)
         self.fake = Fake()
         url = "https://github.com/Starfield-Inc/starfield-website/pull/99"
-        self.fake.pr_list = json.dumps([{"url": url, "isDraft": False, "body": "marked ready by hand"}])
+        self.fake.pr_list = json.dumps([own_pr(url, draft=False)])
         second = self.run_publish()
         self.assertTrue(second.draft)
         self.assertEqual(second.harness_sha, "")
         self.assertIn("data not pushed", second.text)
         self.assertIn(["gh", "pr", "ready", url, "--undo"], [a[:5] for a in self.fake.argvs()])
         self.assertEqual(git(self.s.harness_remote, "log", "--format=%s"), "first")
+
+    def test_existing_pr_whose_manifest_cannot_be_read_is_turned_back_to_a_draft(self):
+        self.fake.pr_list = json.dumps([own_pr(PR_URL, draft=False)])
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        self.assertIn("It is not known whether the harness data was pushed", res.text)
+        self.assertIn(["gh", "pr", "ready", PR_URL, "--undo"], [a[:5] for a in self.fake.argvs()])
+
+    def test_a_fork_pr_with_the_same_branch_name_is_ignored(self):
+        fork = "https://github.com/someone/starfield-website/pull/7"
+        self.fake.pr_list = json.dumps([own_pr(fork, draft=False, fork=True)])
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [PR_URL])
+        self.assertFalse([a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "ready"]])
+        listed = next(a for a in self.fake.argvs() if a[:3] == ["gh", "pr", "list"])
+        self.assertEqual(listed[listed.index("--json") + 1],
+                         "number,url,isDraft,isCrossRepository,headRepositoryOwner,headRefName")
+        self.assertIn(f"Ignored the pull request {fork} from another repository", self.body())
 
     def test_price_change_is_flagged(self):
         s = Setup(Path(self.tmp.name) / "changed", changed=True)
