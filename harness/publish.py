@@ -1,8 +1,11 @@
-"""Publish the day's data: commit it to the harness repo, build the site branch, run every check,
-push the harness commit only if no check failed, then open a pull request on the site repo.
+"""Publish the day's data: commit it in a temporary worktree of the harness repo, build the site branch,
+run every check, push the harness commit only if no check failed, then open a pull request on the site repo.
+
+The owner's checkout, branch and index are never committed to. The only change to them is a fast-forward
+of local main after a push, and only when the checkout is on main and has no other copy of the day's files.
 
 Every git, gh, curl, npm and osascript call goes through one injectable runner. The module never
-merges, never force-pushes and never deploys.
+merges a branch, never force-pushes and never deploys.
 """
 import csv
 import json
@@ -11,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -23,7 +27,7 @@ from harness.price_table import (DEFAULT_MAIN_MODELS, build_table, change_text, 
                                  read_sheet, split_steps, step_note)
 
 AUTHOR = ["-c", "user.name=esteban657", "-c", "user.email=344872025+esteban657@users.noreply.github.com"]
-HARNESS_PUSH = ["git", "push", "origin", "main"]
+FF_MERGE = ["git", "merge", "--ff-only", "origin/main"]
 NOT_PUSHED = "Data was not pushed to the public repository because checks failed."
 LONG_COMMANDS = (["npm", "ci"], ["npm", "test"])
 SCRIPT_READS_FROM = date(2026, 10, 28)
@@ -34,7 +38,20 @@ DEFAULT_NOTES = (
     "- If a price here is wrong, tell us through the [corrections log](/research/corrections/)."
 )
 # A merge, a force or an auto-merge in any command is a bug in this module, so the runner wrapper refuses it.
+# The fast-forward of local main and the removal of the job's own temporary worktree are the two exceptions.
 FORBIDDEN_TOKENS = {"merge", "--auto", "--auto-merge", "--admin", "--force", "-f", "--force-with-lease"}
+
+
+def _allowed(argv):
+    return argv == FF_MERGE or (argv[:4] == ["git", "worktree", "remove", "--force"] and len(argv) == 5)
+
+
+def harness_push_argv(day):
+    return ["git", "push", "origin", f"{data_branch(day)}:main"]
+
+
+def data_branch(day):
+    return f"daily-data-{day.isoformat()}"
 
 
 class PublishError(RuntimeError):
@@ -54,7 +71,8 @@ def run_command(argv, cwd=None, env=None, timeout=None):
 
 
 def _sh(runner, argv, cwd=None, env=None, check=True):
-    if FORBIDDEN_TOKENS & set(argv) or (argv[:2] == ["git", "push"] and any(a.startswith("+") for a in argv)):
+    if (FORBIDDEN_TOKENS & set(argv) and not _allowed(argv)) or (
+            argv[:2] == ["git", "push"] and any(a.startswith("+") for a in argv)):
         raise PublishError(f"refused command: {argv[0]} {argv[1] if len(argv) > 1 else ''}")
     result = runner(argv, cwd=cwd, env=env)
     if check and result.returncode != 0:
@@ -339,7 +357,7 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
     return scrub("\n".join([
         f"Dry run for {fmt_day(day)} (HARNESS_DRY_RUN is set): no commit, no push, no clone and no pull request.",
         "Without the dry run, publish would:",
-        f"- commit {_join(names)} to the harness repository, and push it to main only if no check failed;",
+        f"- commit {_join(names)} on a temporary branch of the harness repository, and push it to main only if no check failed;",
         f"- open a pull request from branch daily-{day.isoformat()} on the site repository.",
         "", render_markdown(checks), ""]), env)
 
@@ -350,11 +368,46 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
 
 def _existing_pr(gh_list_stdout):
     prs = json.loads(gh_list_stdout or "[]")
-    if not prs:
-        return None
-    pr = prs[0]
-    m = re.search(r"Harness commit: ([0-9a-f]{40})", pr.get("body") or "")
-    return PublishResult(m.group(1) if m else "", [pr["url"]], bool(pr.get("isDraft")))
+    return prs[0] if prs else None
+
+
+def _branch_data(branch, repo, ctx):
+    """The harness commit the site branch pins, and whether origin main holds it (None when unknown)."""
+    look = ctx.workdir / f"{branch}-lookup"
+    shutil.rmtree(look, ignore_errors=True)
+    try:
+        cloned = _sh(ctx.runner, ["git", "clone", "-q", "--depth", "1", "--branch", branch, ctx.env["HARNESS_SITE_REPO_URL"],
+                                  str(look)], check=False)
+        if cloned.returncode != 0:
+            return "", None, ""
+        harness = json.loads((look / "deploy" / "harness-manifest.json").read_text(encoding="utf-8"))["harness"]
+    finally:
+        shutil.rmtree(look, ignore_errors=True)
+    sha, url = harness.get("commit") or "", "https://github.com/" + (_github_slug(harness.get("repo") or "") or "")
+    if _sh(ctx.runner, ["git", "fetch", "origin"], cwd=repo, check=False).returncode != 0:
+        return sha, None, url
+    on_main = bool(re.fullmatch(r"[0-9a-f]{40}", sha)) and _sh(
+        ctx.runner, ["git", "merge-base", "--is-ancestor", sha, "origin/main"], cwd=repo, check=False).returncode == 0
+    return sha, on_main, url
+
+
+def _data_status(sha, pushed):
+    if pushed is None:
+        return "It is not known whether the harness data was pushed: the site branch's manifest could not be read."
+    if pushed:
+        return f"Harness data pushed: commit {sha} is on main of the public repository."
+    return (f"Harness data not pushed: the commit the site branch pins ({sha[:7] or 'none'}) is not on main of the "
+            "public repository. The pull request must stay a draft.")
+
+
+def _found_pr(pr, branch, repo, ctx):
+    sha, pushed, _ = _branch_data(branch, repo, ctx)
+    draft = bool(pr.get("isDraft")) or pushed is not True
+    if pushed is False and not pr.get("isDraft"):
+        _sh(ctx.runner, ["gh", "pr", "ready", pr["url"], "--undo", *ctx.repo_args], cwd=ctx.workdir, env=ctx.gh_env,
+            check=False)
+    text = scrub(f"Found the existing pull request {pr['url']}. {_data_status(sha, pushed)}\n", ctx.env)
+    return PublishResult(sha if pushed else "", [pr["url"]], draft, text)
 
 
 def _data_groups(day, price_result, gpu_result):
@@ -366,34 +419,79 @@ def _data_groups(day, price_result, gpu_result):
     return groups
 
 
-def _commit_harness(repo, groups, runner):
-    """Commit each group unless HEAD already holds it. Returns True if a commit was made."""
-    made = False
+def _rel(repo, f):
+    return str(Path(f).resolve().relative_to(repo.resolve()))
+
+
+def _same_as(runner, cwd, file, rev, path):
+    want = _sh(runner, ["git", "rev-parse", "--verify", "--quiet", f"{rev}:{path}"], cwd=cwd, check=False).stdout.strip()
+    return bool(want) and _sh(runner, ["git", "hash-object", "--", str(file)], cwd=cwd).stdout.strip() == want
+
+
+def _commit_data(repo, data_dir, groups, runner):
+    """Commit each group whose files differ from origin/main, in the temporary worktree.
+    Returns (sha of the commit holding the day's data, whether a commit was made, the data paths)."""
+    made, all_paths = False, []
     for files, message in groups:
-        paths = [str(Path(f).resolve().relative_to(repo.resolve())) for f in files]
-        dirty = _sh(runner, ["git", "status", "--porcelain", "--", *paths], cwd=repo).stdout.strip()
-        tracked = _sh(runner, ["git", "ls-files", "--error-unmatch", "--", *paths], cwd=repo, check=False).returncode == 0
-        if not dirty and tracked:
+        pairs = [(Path(f), _rel(repo, f)) for f in files]
+        all_paths += [p for _, p in pairs]
+        if all(_same_as(runner, data_dir, f, "origin/main", p) for f, p in pairs):
             continue
-        _sh(runner, ["git", "add", "--", *paths], cwd=repo)
-        _sh(runner, ["git", *AUTHOR, "commit", "-m", message, "--", *paths], cwd=repo)
+        for f, p in pairs:
+            (data_dir / p).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, data_dir / p)
+        paths = [p for _, p in pairs]
+        _sh(runner, ["git", "add", "--", *paths], cwd=data_dir)
+        _sh(runner, ["git", *AUTHOR, "commit", "-q", "-m", message, "--", *paths], cwd=data_dir)
         made = True
-    return made
+    rev = ["git", "rev-parse", "HEAD"] if made else ["git", "rev-list", "-1", "origin/main", "--", *all_paths]
+    return _sh(runner, rev, cwd=data_dir).stdout.strip(), made, all_paths
 
 
-def _push_harness(repo, runner):
-    branch = _sh(runner, ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo, check=False).stdout.strip()
-    if branch != "main":
-        return Check("harness push", FAIL, f"the harness checkout is on '{branch}', not main, so nothing was pushed")
-    fetch = _sh(runner, ["git", "fetch", "origin"], cwd=repo, check=False)
-    if fetch.returncode != 0:
-        return Check("harness push", FAIL, f"`git fetch origin` failed: {_tail(fetch.stderr or fetch.stdout)}")
-    if _sh(runner, ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], cwd=repo, check=False).returncode == 0:
-        return Check("harness push", PASS, "origin main already holds the data commit")
-    res = _sh(runner, HARNESS_PUSH, cwd=repo, check=False)
+def _remove_data_worktree(repo, data_dir, branch, runner):
+    """Remove the temporary worktree and branch. Nothing in them is public unless origin main holds it."""
+    _sh(runner, ["git", "worktree", "remove", "--force", str(data_dir)], cwd=repo, check=False)
+    shutil.rmtree(data_dir, ignore_errors=True)
+    if _sh(runner, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo, check=False).returncode == 0:
+        _sh(runner, ["git", "branch", "-D", branch], cwd=repo, check=False)
+
+
+def _push_harness(day, data_dir, runner):
+    argv = harness_push_argv(day)
+    res = _sh(runner, argv, cwd=data_dir, check=False)
     if res.returncode != 0:
-        return Check("harness push", FAIL, f"`git push origin main` failed: {_tail(res.stderr or res.stdout)}")
+        return Check("harness push", FAIL, f"`{' '.join(argv)}` failed (fast-forward only): {_tail(res.stderr or res.stdout)}")
     return Check("harness push", PASS, "data commit pushed to origin main")
+
+
+def _update_local_main(repo, paths, workdir, runner):
+    """Fast-forward the owner's main to origin main, only when that cannot lose or change any of their work."""
+    not_updated = "The harness checkout on this machine {}, so local main was not updated."
+    if _sh(runner, ["git", "branch", "--show-current"], cwd=repo, check=False).stdout.strip() != "main":
+        return not_updated.format("is not on main")
+    _sh(runner, ["git", "fetch", "origin"], cwd=repo, check=False)
+    if _sh(runner, ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], cwd=repo, check=False).returncode != 0:
+        return not_updated.format("has commits that are not on origin main")
+    status = _sh(runner, ["git", "status", "--porcelain", "--untracked-files=all", "--", *paths], cwd=repo).stdout
+    copies = []
+    for line in status.splitlines():
+        path = line[3:]
+        if not line.startswith("?? ") or not _same_as(runner, repo, repo / path, "origin/main", path):
+            return not_updated.format(f"has its own changes to {path}")
+        copies.append(path)
+    # The untracked copies would block the fast-forward. Keep them aside until it has worked.
+    aside = Path(tempfile.mkdtemp(dir=workdir, prefix="local-copies-"))
+    for path in copies:
+        (aside / path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(repo / path, aside / path)
+    res = _sh(runner, FF_MERGE, cwd=repo, check=False)
+    if res.returncode != 0:
+        for path in copies:
+            shutil.move(aside / path, repo / path)
+    shutil.rmtree(aside, ignore_errors=True)
+    if res.returncode != 0:
+        return not_updated.format(f"could not fast-forward ({_tail(res.stderr or res.stdout)})")
+    return "Local main was fast-forwarded to origin main."
 
 
 def _public_check(runner, slug, sha):
@@ -470,13 +568,30 @@ def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site)
               cwd=ctx.workdir, env=ctx.gh_env, check=False)
     if res.returncode != 0:
         failed = Check("pull request", FAIL, f"`gh pr create` failed: {_tail(res.stderr or res.stdout)}")
-        return _report_locally(day, summary, [*checks, failed], ctx.env, ctx.runner)
+        return _report_locally(day, summary, [*checks, failed], ctx.env, ctx.runner, sha)
     return PublishResult(sha, [res.stdout.strip().splitlines()[-1]], is_draft(checks))
 
 
+@dataclass
+class _Progress:
+    """What has already reached the public harness repo, so a crash report can say so."""
+    pushed_sha: str = ""
+
+
 def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, env, runner=run_command) -> PublishResult:
-    """Never raises for a failed input step: without a price sheet it writes a local report instead of a PR."""
-    repo, branch = Path(repo), f"daily-{day.isoformat()}"
+    """Never raises. Any error writes the scrubbed report to the local log folder instead of a PR."""
+    progress = _Progress()
+    try:
+        return _publish(day, Path(repo), price_result, gpu_result, env, runner, progress)
+    except Exception as e:
+        inputs = [*price_result.checks, *(gpu_result.checks if gpu_result else [])]
+        failed = Check("publish", FAIL, f"{type(e).__name__}: {e}")
+        summary = [f"Daily data for {fmt_day(day)}.", "The publish step stopped with an error."]
+        return _report_locally(day, summary, [*inputs, failed], env, runner, progress.pushed_sha)
+
+
+def _publish(day, repo, price_result, gpu_result, env, runner, progress):
+    branch = f"daily-{day.isoformat()}"
     gpu_result = gpu_result or GpuResult(day, [], None, [Check("gpu step", FAIL, "gpu step did not run")])
     inputs = [*price_result.checks, *gpu_result.checks]
     if is_dry_run(env):
@@ -496,12 +611,14 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, 
         return _report_locally(day, header, [*inputs, failed], env, runner)
     existing = _existing_pr(found.stdout)
     if existing:
-        return existing
+        return _found_pr(existing, branch, repo, ctx)
     if _sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip():
+        sha, pushed, harness_url = _branch_data(branch, repo, ctx)
         retry = Check("site checks", FAIL, f"not run again: the pull request is opened from the {branch} branch an earlier run pushed")
         summary = [*header, f"An earlier run pushed the {branch} branch but opened no pull request. "
-                            "This pull request is opened from that branch as it is."]
-        return _open_pr(day, branch, summary, [*inputs, retry], "", "", True, ctx)
+                            "This pull request is opened from that branch as it is.", _data_status(sha, pushed)]
+        return _open_pr(day, branch, summary, [*inputs, retry], sha if pushed else "", harness_url,
+                        pushed is not False, ctx)
 
     missing = [Check(name, FAIL, f"{Path(path).name} does not exist, so no price page can be built")
                for name, path in (("price sheet", price_result.sheet), ("previous price sheet", price_result.previous_sheet))
@@ -509,10 +626,21 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, 
     if missing:
         return _report_locally(day, header, [*inputs, *missing], env, runner)
 
-    base = _sh(runner, ["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
-    committed = _commit_harness(repo, _data_groups(day, price_result, gpu_result), runner)
-    sha = _sh(runner, ["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+    data_dir = workdir / data_branch(day)
+    _remove_data_worktree(repo, data_dir, data_branch(day), runner)
+    _sh(runner, ["git", "fetch", "origin"], cwd=repo)
+    try:
+        _sh(runner, ["git", "worktree", "add", "-q", "-b", data_branch(day), str(data_dir), "origin/main"], cwd=repo)
+        sha, committed, data_paths = _commit_data(repo, data_dir, _data_groups(day, price_result, gpu_result), runner)
+        return _build_site(day, repo, price_result, gpu_result, inputs, header, sha, committed, data_dir, data_paths,
+                           ctx, progress)
+    finally:
+        _remove_data_worktree(repo, data_dir, data_branch(day), runner)
 
+
+def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, committed, data_dir, data_paths,
+                ctx: _Site, progress):
+    runner, workdir, url, branch = ctx.runner, ctx.workdir, ctx.env["HARNESS_SITE_REPO_URL"], f"daily-{day.isoformat()}"
     clone = workdir / branch
     if clone.exists():
         shutil.rmtree(clone)
@@ -563,7 +691,7 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, 
     own.append(Check("price page matches sheet", FAIL if problems else PASS,
                      "; ".join(problems[:5]) if problems else
                      f"{sum(len(v) for v in parse_page_tables(page_text).values())} rows compared cell for cell"))
-    own += _run_site_steps(runner, clone, repo, sha)
+    own += _run_site_steps(runner, clone, data_dir, sha)
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
     diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json"], cwd=clone).stdout
@@ -571,15 +699,17 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, 
     own.append(Check("no host details in site files", FAIL if hits else PASS,
                      f"private text matched: {', '.join(hits)}" if hits else "added lines scanned, no private text"))
 
-    pushed = not is_draft([*inputs, *own])
-    if pushed:
-        own.append(_push_harness(repo, runner))
+    pushed, local_note = False, []
+    if not committed:
+        own.append(Check("harness push", PASS, "origin main already holds the day's data, so nothing was committed or pushed"))
+        pushed = True
+    elif not is_draft([*inputs, *own]):
+        own.append(_push_harness(day, data_dir, runner))
         pushed = own[-1].status == PASS
-        if pushed:
-            own.append(_public_check(runner, _github_slug(repo_url) or "", sha))
-    elif committed:
-        # Leave no unpushed data commit behind, or a later clean day would push it.
-        _sh(runner, ["git", "reset", "-q", base], cwd=repo)
+    if pushed:
+        progress.pushed_sha = sha
+        own.append(_public_check(runner, _github_slug(repo_url) or "", sha))
+        local_note = [_update_local_main(repo, data_paths, workdir, runner)]
 
     checks = [*inputs, *own, *flags_extra]
     summary = [*header,
@@ -588,18 +718,22 @@ def publish(day, repo, price_result: PriceResult, gpu_result: GpuResult | None, 
                    "The Model Watch post is not changed." if gpu_result.summary else "No GPU runs were added today.")
     summary += list(gpu_result.notes)
     summary.append("The cover image for the new price page is not made here. It needs `npm run graphics` on a machine with Chrome.")
+    summary += local_note
 
     _sh(runner, ["git", *AUTHOR, "commit", "-m", f"Daily price pages: prices read {fmt_day(day)}"], cwd=clone)
     _sh(runner, ["git", "push", "-u", "origin", branch], cwd=clone)
-    return _open_pr(day, branch, summary, checks, sha if pushed else "", harness_url, pushed, ctx)
+    result = _open_pr(day, branch, summary, checks, sha if pushed else "", harness_url, pushed, ctx)
+    if local_note and result.pr_urls:
+        result = PublishResult(result.harness_sha, result.pr_urls, result.draft, scrub("\n".join(local_note) + "\n", ctx.env))
+    return result
 
 
-def _run_site_steps(runner, clone, repo, sha):
+def _run_site_steps(runner, clone, harness_dir, sha):
     steps = []
     if not (clone / "node_modules").exists():
         steps.append(("site dependencies", ["npm", "ci"], "installed with npm ci", None))
     steps += [
-        ("site manifest sync", ["npm", "run", "sync:harness", "--", str(repo), "--commit", sha, "--write"],
+        ("site manifest sync", ["npm", "run", "sync:harness", "--", str(harness_dir), "--commit", sha, "--write"],
          "pins and file hashes written by the site's own command", None),
         ("site manifest check", ["npm", "run", "harness:check"], "every file in assets/research matches the manifest", None),
         ("site golden file", ["node", "--test", "deploy/content.golden.test.mjs"],
