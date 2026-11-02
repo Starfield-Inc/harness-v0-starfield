@@ -34,6 +34,7 @@ This is not a ranking. The models stop at different lengths, so compare the toke
 - [`docs/methodology.md`](docs/methodology.md): how Model Watch measures things, in plain English. It marks what is done and what is planned.
 - [`docs/spec.md`](docs/spec.md): the method in detail: models, engines and versions, metrics, run rules, sources, charts and CSV columns.
 - [`docs/findings-2026-10-28.md`](docs/findings-2026-10-28.md): what the first three runs showed, and what they do not show.
+- [`docs/daily-job.md`](docs/daily-job.md): what the daily job does, the checks it runs, and how to schedule it.
 - [`data/prices/`](data/prices/): the dated price sheets. [`data/speed/`](data/speed/): one summary row per model.
 - [`results/`](results/): raw run files, each run with its CSV and run record.
 - [`charts/`](charts/): one folder per read date, for example `charts/2026-10-20/`. See [`docs/chart.md`](docs/chart.md).
