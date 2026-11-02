@@ -1,5 +1,7 @@
 import io
 import os
+import plistlib
+import shutil
 import subprocess
 import tempfile
 import time
@@ -405,6 +407,30 @@ class TestDailyPrices(Case):
         names = [c.name for c in result.checks]
         self.assertEqual(names[0], "price read")
         self.assertIn("price changes", names)
+
+
+class TestInstallScript(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("plutil"), "plutil is macOS only")
+    def test_paths_with_ampersand_and_angle_brackets_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "R&D <x>"
+            repo, logs, envfile = root / "repo&1", root / "logs&2", root / "daily&3.env"
+            repo.mkdir(parents=True)
+            python = str(root / "py&thon" / "bin" / "python3")
+            script = Path(__file__).resolve().parent.parent / "scripts/launchd/install.sh"
+            env = {"HOME": tmp, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+            subprocess.run(["bash", str(script), "--python", python, "--repo", str(repo), "--logdir", str(logs),
+                            "--envfile", str(envfile), "--hour", "7", "--minute", "05"],
+                           env=env, check=True, capture_output=True, text=True)
+            target = Path(tmp) / "Library/LaunchAgents/net.starfield.harness-daily.plist"
+            lint = subprocess.run(["plutil", "-lint", str(target)], capture_output=True, text=True)
+            self.assertEqual(lint.returncode, 0, lint.stdout)
+            plist = plistlib.loads(target.read_bytes())
+            self.assertEqual(plist["ProgramArguments"][0], python)
+            self.assertEqual(plist["WorkingDirectory"], str(repo))
+            self.assertEqual(plist["EnvironmentVariables"]["HARNESS_DAILY_ENV"], str(envfile))
+            self.assertEqual(plist["StandardOutPath"], f"{logs}/harness-daily.out.log")
+            self.assertEqual(plist["StartCalendarInterval"], {"Hour": 7, "Minute": 5})
 
 
 if __name__ == "__main__":

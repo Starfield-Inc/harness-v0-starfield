@@ -2,6 +2,9 @@
 # Writes the daily-job LaunchAgent plist and prints the launchctl command to run.
 # This script never calls launchctl.
 set -euo pipefail
+# bash 5.2 turns "&" in a ${var//pattern/replacement} replacement into the matched text,
+# which would mangle a path that contains "&". Older bash has no such option.
+shopt -u patsub_replacement 2>/dev/null || true
 
 LABEL="net.starfield.harness-daily"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
