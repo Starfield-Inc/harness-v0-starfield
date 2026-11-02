@@ -73,6 +73,8 @@ Energy windows will last several minutes after warm-up, with 60 seconds of idle 
 
 Prices differ between hosts and makers. Example: DeepInfra lists claude-sonnet-5 at $3.00 in / $15.00 out, while Anthropic's page lists Sonnet 5 at $2 / $10 (both read 20 Oct 2026; [DeepInfra](https://deepinfra.com/pricing), [Anthropic](https://claude.com/pricing)). For open-versus-paid comparisons, we name one host per open model. Only Google's page shows its own date (2026-10-19) and a scheduled rise: Gemini 4 Argon goes from $2.00 / $10.00 to $4.00 / $20.00 on 1 Dec 2026 ([Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)). Each post states which price date it uses.
 
+When a provider takes a model off its pricing page, the model can stay on the sheet as a carried-forward row. Its price is the one from our last read, its label is `published by <provider>, not on the page on <read date>`, and its `how_read` names the date of that last read. Mistral Large 3 and Mistral Medium 3.5 are carried this way from the 30 Oct 2026 read, because they left Mistral's page on 2 Nov 2026. We label them so no one takes an old price for a current one. The daily checks flag carried rows every day, and the reader stops if the provider lists the model again, so a carried price never replaces a real one. See [the price reader](price-reader.md#carried-forward-rows).
+
 ## 5. Charts
 
 - One horizontal bar chart, one metric, one source date. Bars show the mean, with whiskers for the standard deviation on measured data.

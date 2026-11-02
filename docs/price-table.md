@@ -35,6 +35,9 @@ A row such as `gemini-4-argon (Standard) from 2026-12-01` is a scheduled price, 
 - `input $2 -> $3` or `output $10 -> $12`: the price that changed. If both changed, both are shown, input first.
 - `new`: the provider and model are not in the previous file.
 - `first read`: no previous file was given.
+- `carried forward from 30 Oct 2026`: the model is no longer on the provider's page, and the price is the one read on that date (see [carried-forward rows](price-reader.md#carried-forward-rows)). This text is used with or without a previous file.
+
+When there are carried rows, one note goes under the tables for each provider and date, for example: `Mistral Large 3 and Mistral Medium 3.5 are no longer on Mistral's pricing page. The prices shown are the ones read on 30 Oct 2026.` On the daily price page the note goes in the Notes section instead. A note copied from the earlier page is replaced, so it never appears twice and goes away when the rows do.
 
 Models that were in the previous file and are not in today's file are listed in one line under the tables: `Not read today: ...`. Step rows are not listed there.
 

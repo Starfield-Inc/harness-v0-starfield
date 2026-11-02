@@ -131,6 +131,8 @@ Price sheet.
 - `read date`. The file name matches `price-sheet-YYYY-MM-DD.csv`, and every row carries that date.
 - `row count`. The sheet has as many rows as the previous sheet.
 - `same rows`. The sheet has the same provider and model rows as the previous sheet.
+
+A row added or removed that is listed in `prices/row-changes.json` for the sheet's date turns `row count` and `same rows` into a FLAG that quotes the note. Any other row change still fails.
 - `prices present`. Every row has an input price and an output price.
 - `labels`. Every label starts with `published by `, and every source URL is https.
 
@@ -148,7 +150,8 @@ Run files, one set of checks for each model.
 
 A FLAG does not draft the pull request. It asks a person to look before merging.
 
-- `price changes`. A provider changed an input or output price since the previous sheet. The detail lists each change.
+- `price changes`. A provider changed an input or output price since the previous sheet. The detail lists each change. Carried-forward rows are not compared.
+- `carried rows`. The sheet has rows a provider no longer lists, kept with an earlier price. The detail names each row and the date of its price.
 - `speed band`. Output tokens per second moved more than 2 percent from the mean of the earlier days.
 - `token band`. Output tokens per run moved more than 5 percent from the mean of the earlier days.
 
