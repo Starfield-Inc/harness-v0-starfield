@@ -1,3 +1,4 @@
+import time
 import unittest
 
 from harness.scrub import scrub
@@ -80,6 +81,12 @@ class ScrubTest(unittest.TestCase):
             self.assertNotIn(bad, out)
         self.assertTrue(out.startswith("token <redacted>"))
         self.assertTrue(out.endswith("done"))
+
+    def test_a_long_token_is_scrubbed_in_linear_time(self):
+        start = time.monotonic()
+        out = scrub("a" * 50000 + " gpu-01.lan " + "b" * 50000, {"HARNESS_PRIVATE_TERMS": "gpu"})
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertIn(" <redacted> ", out)
 
 
 if __name__ == "__main__":

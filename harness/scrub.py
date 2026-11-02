@@ -25,10 +25,10 @@ SECRETS = re.compile(
     r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}"
     r"|(?<![A-Za-z0-9])xox[a-z]-[A-Za-z0-9-]+"
     r"|(?<![A-Za-z0-9])AKIA[0-9A-Z]{12,}", re.S)
-AT_TOKEN = re.compile(r"\S+@\S+")
+AT_TOKEN = re.compile(r"(?<!\S)\S+@\S+")
 EMAIL = re.compile(r"[\w.+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
 # Letters, digits, dot, dash, underscore and slash: the characters of a host name or a path.
-TOKEN = "[A-Za-z0-9._/-]*"
+TOKEN_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
 
 
 def _is_safe(host: str) -> bool:
@@ -59,14 +59,30 @@ def _protected(text: str) -> str:
 
 
 def _terms(env):
-    """A pattern for the private terms as whole tokens, or None. A term inside a host name or a path
-    takes the whole host name or path with it, so no part of a private name is left."""
+    """A pattern for the private terms as whole tokens (no letter or digit right before or after), or None."""
     values = {v for k in SECRET_KEYS for v in [env.get(k, "").strip()] if len(v) >= 3}
     values |= {t.strip() for t in env.get("HARNESS_PRIVATE_TERMS", "").split(",") if len(t.strip()) >= 3}
     if not values:
         return None
     alts = "|".join(re.escape(v) for v in sorted(values, key=len, reverse=True))
-    return re.compile(rf"{TOKEN}(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9]){TOKEN}", re.IGNORECASE)
+    return re.compile(rf"(?<![A-Za-z0-9])(?:{alts})(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _redact_terms(text, terms):
+    """A term inside a host name or a path takes the whole host name or path with it, so no part of a
+    private name is left. The widening is done by hand: a regex with a repeat on each side is quadratic."""
+    out, last = [], 0
+    for m in terms.finditer(text):
+        start, end = m.start(), m.end()
+        if start < last:
+            continue
+        while start > last and text[start - 1] in TOKEN_CHARS:
+            start -= 1
+        while end < len(text) and text[end] in TOKEN_CHARS:
+            end += 1
+        out += [text[last:start], "<redacted>"]
+        last = end
+    return "".join(out) + text[last:]
 
 
 def _at_token(m: re.Match) -> str:
@@ -96,7 +112,7 @@ def scrub(text: str, env: dict) -> str:
     text = SECRETS.sub("<redacted>", text)
     terms = _terms(env)
     if terms:
-        text = terms.sub("<redacted>", text)
+        text = _redact_terms(text, terms)
     text = AT_TOKEN.sub(_at_token, text)
     out, last = [], 0
     for m in PROTECTED.finditer(text):
