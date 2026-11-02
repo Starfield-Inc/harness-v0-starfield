@@ -16,10 +16,13 @@ resumes that launch instead of starting a new one, and a finished launch lists i
 the record's "done" list, so a day is recognised as done even when its runs crossed midnight UTC.
 """
 import csv
+import io
 import json
+import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -56,6 +59,8 @@ ENV_KEYS = ("HARNESS_GPU_SSH", "HARNESS_GPU_WORKDIR", "HARNESS_GPU_ENV_PATH", "H
 MODEL_ID = re.compile(r"[A-Za-z0-9._/-]+")
 REVISION = re.compile(r"[0-9a-f]{40}")
 STAMP = re.compile(r"\d{8}T\d{6}Z")
+RUN_FILE = re.compile(r"vllm-[A-Za-z0-9._-]+\.csv|vllm-[A-Za-z0-9._-]+\.record\.json|[A-Za-z0-9][A-Za-z0-9._-]*-r\d+\.json")
+MAX_RUN_FILE_BYTES = 5 * 2**20
 
 
 class StepFailed(Exception):
@@ -185,6 +190,11 @@ def _rsync(*args) -> list[str]:
     return ["rsync", "-a", "--timeout=60", "-e", "ssh " + " ".join(SSH_OPTIONS), *args]
 
 
+def _pull_rsync(*args) -> list[str]:
+    # the host is not trusted: a link copied back could point at any local file
+    return _rsync("--no-links", "--no-devices", "--no-specials", f"--max-size={MAX_RUN_FILE_BYTES // 2**20}M", *args)
+
+
 def commit_argv(repo: Path) -> list[str]:
     return ["git", "-C", str(repo), "rev-parse", "main"]
 
@@ -265,7 +275,7 @@ def status_argv(host, stamp):
 
 
 def pull_argv(host, stamp, dest: Path):
-    return _rsync(f"{host.alias}:{host.paths(stamp)['out']}/", f"{dest}/")
+    return _pull_rsync(f"{host.alias}:{host.paths(stamp)['out']}/", f"{dest}/")
 
 
 def idle_argv(host):
@@ -399,12 +409,50 @@ def _collect(runner, host, models, repo, stamp, checks, text, staging) -> list[P
         raise StepFailed("remote run", "the run script stopped, see the guard and exit checks")
     staging.mkdir(parents=True, exist_ok=True)
     _call(runner, "copy back", pull_argv(host, stamp, staging))
+    files = _check_staging(staging)
     results = repo / "results"
     try:
-        shutil.copytree(staging, results, dirs_exist_ok=True)
+        for f in files:
+            (results / f.name).unlink(missing_ok=True)
+            shutil.copy2(f, results / f.name)
     except OSError as e:
         raise StepFailed("copy back", f"cannot copy the run files into results: {e}")
-    return sorted(results / p.name for p in staging.glob("vllm-*.csv"))
+    return sorted(results / f.name for f in files if f.name.endswith(".csv"))
+
+
+def _check_staging(staging: Path) -> list[Path]:
+    """The copied-back files, after checking that each is a plain, parseable run file.
+
+    Anything else fails the copy back before a single file reaches results/, which is public."""
+    problems, files = [], []
+    for f in sorted(staging.iterdir()):
+        mode = os.lstat(f)
+        if not stat.S_ISREG(mode.st_mode):
+            problems.append(f"{f.name!r} is not a plain file")
+        elif not RUN_FILE.fullmatch(f.name):
+            problems.append(f"{f.name!r} is not a run file name")
+        elif mode.st_size > MAX_RUN_FILE_BYTES:
+            problems.append(f"{f.name} is over {MAX_RUN_FILE_BYTES // 2**20} MB")
+        else:
+            try:
+                _parse_run_file(f)
+            except (OSError, ValueError, csv.Error) as e:
+                problems.append(f"{f.name} does not parse: {e}")
+            else:
+                files.append(f)
+    if problems:
+        raise StepFailed("copy back files", "; ".join(problems[:5]))
+    return files
+
+
+def _parse_run_file(f: Path) -> None:
+    text = f.read_text(encoding="utf-8")
+    if f.suffix == ".json":
+        json.loads(text)
+        return
+    rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    if not rows or any(len(r) != len(rows[0]) for r in rows):
+        raise ValueError("empty, or rows of different lengths")
 
 
 def _models_in(csvs) -> set[str]:

@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import tempfile
@@ -82,9 +83,10 @@ class FakeHost:
 
     def __init__(self, repo: Path, logs=None, remote_sha=None, idle="mem=0 load=0.3 servers=0",
                  tests_code=0, copy_files=True, runs=None, leftovers=(), fail=None, write_bundle=True,
-                 launched=None, now=LAUNCH_TIME, public=True):
+                 launched=None, now=LAUNCH_TIME, public=True, plant=None):
         self.repo, self.calls = repo, []
         self.public = public
+        self.plant = plant
         self.logs = list(logs if logs is not None else [good_log()])
         self.remote_sha = remote_sha
         self.idle, self.tests_code = idle, tests_code
@@ -122,8 +124,11 @@ class FakeHost:
             return 0, ""
         if argv[0] == "rsync":
             if argv[-2].startswith("fake-alias:"):
-                for m, i, ymd in self.remote.get(argv[-2].removeprefix("fake-alias:").rstrip("/"), []):
+                source = argv[-2].removeprefix("fake-alias:").rstrip("/")
+                for m, i, ymd in self.remote.get(source, []):
                     write_run(Path(argv[-1]), m, i, ymd)
+                if self.plant and source == self.out_dir:
+                    self.plant(Path(argv[-1]), argv)
             return 0, ""
         command = argv[-1]
         if "sha256sum" in command:
@@ -222,6 +227,63 @@ class DailyGpuTest(unittest.TestCase):
         start = host.ran("nohup")[0][-1]
         self.assertIn("setsid", start)
         self.assertIn(COMMIT, host.ran("git fetch")[0][-1])
+
+    def test_copy_back_keeps_remote_links_out_of_results(self):
+        secret = self.repo.parent / "id_key"
+        secret.write_text("PRIVATE KEY TEXT", encoding="utf-8")
+
+        def link_like_rsync_a(dest, argv):
+            if "--no-links" not in argv:
+                raw = dest / f"{YMD}T100001Z-org-model-1-r1.json"
+                raw.unlink()
+                raw.symlink_to(secret)
+        self.go(FakeHost(self.repo, plant=link_like_rsync_a))
+        for f in (self.repo / "results").iterdir():
+            self.assertFalse(f.is_symlink(), f.name)
+            self.assertNotIn("PRIVATE KEY", f.read_text(encoding="utf-8"), f.name)
+
+    def test_copy_back_rsync_refuses_links_devices_and_big_files(self):
+        host, _ = self.go()
+        pull = [c for c in host.ran("rsync") if c[-2].startswith("fake-alias:")][0]
+        for flag in ("--no-links", "--no-devices", "--no-specials", "--max-size=5M"):
+            self.assertIn(flag, pull)
+
+    def test_copy_back_refuses_anything_but_plain_run_files(self):
+        secret = self.repo.parent / "id_key"
+        secret.write_text("PRIVATE KEY TEXT", encoding="utf-8")
+        raw = f"{YMD}T100001Z-org-model-1-r1.json"
+
+        def replace_raw(make):
+            def plant(dest, argv):
+                (dest / raw).unlink()
+                make(dest / raw)
+            return plant
+
+        def nested(dest, argv):
+            (dest / "sub").mkdir()
+            write_run(dest / "sub", MODELS[0], 5)
+        cases = {
+            "link": replace_raw(lambda f: f.symlink_to(secret)),
+            "fifo": replace_raw(os.mkfifo),
+            "nested folder": nested,
+            "raw file is not JSON": replace_raw(lambda f: f.write_text("not json", encoding="utf-8")),
+            "csv is not UTF-8": lambda dest, argv: next(dest.glob("vllm-*.csv")).write_bytes(b"a,b\n\xff,1\n"),
+            "csv row is short": lambda dest, argv: next(dest.glob("vllm-*.csv")).write_text("a,b\n1\n"),
+            "dot dot name": lambda dest, argv: (dest / "..-r1.json").write_text("{}"),
+            "space in name": lambda dest, argv: (dest / "bad name-r1.json").write_text("{}"),
+            "other kind of file": lambda dest, argv: (dest / "notes.txt").write_text("x"),
+        }
+        for name, plant in cases.items():
+            with self.subTest(name):
+                self.record.unlink(missing_ok=True)
+                shutil.rmtree(self.record.parent / STAMP, ignore_errors=True)
+                shutil.rmtree(self.repo / "results")
+                (self.repo / "results").mkdir()
+                host, result = self.go(FakeHost(self.repo, plant=plant))
+                self.assertEqual([c.status for c in self.status(result, "copy back files")], [FAIL])
+                self.assertEqual(list((self.repo / "results").iterdir()), [])
+                self.assertEqual(len(host.idle_checks()), 1)
+                self.assertNotIn("PRIVATE KEY", result_text(result))
 
     def test_failed_guard_stops_and_fails(self):
         log = ("2026-11-02T10:00:00Z start\n2026-11-02T10:00:01Z model Org/Model-1: guard\n"
