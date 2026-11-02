@@ -22,7 +22,7 @@ import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from harness import daily_prices
+from harness import daily_prices, slack_notify
 from harness.checks import Check, FAIL, PASS, render_markdown
 from harness.daily_types import PriceResult, is_dry_run
 from harness.publish import run_command, write_report
@@ -207,7 +207,7 @@ def _guarded(name, step):
         return None, Check(name, FAIL, f"{type(e).__name__}: {e}")
 
 
-def run_day(day, repo, env, skip_gpu=False, skip_publish=False, fakes=None):
+def run_day(day, repo, env, skip_gpu=False, skip_publish=False, fakes=None, out=None):
     """Return (all checks, PublishResult or None, the FAIL checks of steps that raised)."""
     fakes = fakes or {}
     checks, crashed = [], []
@@ -233,7 +233,17 @@ def run_day(day, repo, env, skip_gpu=False, skip_publish=False, fakes=None):
             "publish step", lambda: _publish(day, repo, env, fakes, price_result, gpu_result))
         checks.append(failure or Check("publish", PASS, ", ".join(published.pr_urls) or "no PR opened"))
         crashed += [failure] if failure else []
+        _notify(day, repo, env, fakes, checks, price_result, gpu_result, published, out or sys.stdout)
     return checks, published, crashed
+
+
+def _notify(day, repo, env, fakes, checks, price_result, gpu_result, published, out):
+    """Post the Slack summary. Nothing in here may change the exit code or raise."""
+    try:
+        notify = fakes.get("notify", slack_notify.notify_run)
+        notify(day, repo, env, checks, price_result, gpu_result, published, out)
+    except Exception:
+        pass
 
 
 def _day(text):
@@ -300,7 +310,7 @@ def _main(argv, out, env, fakes, runner) -> int:
     try:
         with Lock(args.repo, env, runner):
             checks, published, crashed = run_day(args.date, args.repo, env, args.skip_gpu,
-                                                 args.skip_publish, fakes)
+                                                 args.skip_publish, fakes, out)
     except LockError as e:
         text = f"The daily run for {args.date} did not start: {e}."
         say([text])

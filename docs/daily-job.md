@@ -175,6 +175,25 @@ The push command is not a setting. The job always pushes with `git push origin d
 | `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |
 | `HARNESS_DRY_RUN` | `1`, `true`, `yes` or `on`, in any case, turns on dry run. The GPU step lists its commands and runs none. The publish step makes no commit, no push, no clone and no pull request, and prints what it would do. Any other value, or no value, is a normal run. |
 | `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run, except words that already appear in the public repository. |
+| `SLACK_WEBHOOK_URL_TEST` | The Slack webhook of the test channel. The job posts here unless `SLACK_TARGET` is `main`. |
+| `SLACK_WEBHOOK_URL_MAIN` | The Slack webhook of the main channel. Used only when `SLACK_TARGET` is `main`. |
+| `SLACK_TARGET` | `main` posts to the main channel. Any other value, or no value, posts to the test channel. |
+
+## Slack messages
+
+The job posts two kinds of message. Both are text only, in Slack formatting. The code is in `harness/slack_notify.py`.
+
+Message A is the daily run summary. The job posts it after the publish step. It has the title "Model Watch daily run, D Mon YYYY" and no `@here`. The Findings section has one line per model (output tokens per second, the value of the earlier day, first token time) and one line about prices: "No price changed since D Mon YYYY." or the changes, at most 8, then "and N more changes". The Checks section says "All checks passed", or lists the failed and flagged checks, at most 6 of each. The Review section links the pull requests and, for a draft, says "Draft: checks failed, do not merge until fixed". If the GPU step produced no summary, the message says there is no speed data.
+
+Message B tells people that pages are live. It starts with `@here`, has a Findings section (the same lines as message A, left out when no CSV is given) and a Live pages section with one line per page. The site's deploy workflow posts it after the pages are live, with the same builder, through `python3 -m harness.slack_notify_site --pages pages.json --assets <site checkout>/assets/research`. That command reads one webhook from `SLACK_WEBHOOK_URL`, so the workflow picks the main or test webhook. `python3 -m harness.slack_notify live ...` builds the same message from explicit paths.
+
+Rules for both messages.
+
+- Every message goes through the scrub before it is posted. Messages longer than 3000 characters are cut and end with `...`.
+- With no webhook the job prints "no webhook, skipping" and goes on.
+- A failed post prints only the error name. The webhook URL is never printed or logged.
+- Slack can never change the exit code of the job.
+- In a dry run (`HARNESS_DRY_RUN`) the job prints message A, scrubbed, and posts nothing.
 
 ## Run it by hand
 
