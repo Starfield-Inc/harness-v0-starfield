@@ -47,7 +47,7 @@ def run(day: date, repo: Path, read_pages=price_reader.main) -> PriceResult:
         checks.append(Check("price read", FAIL, f"{type(e).__name__}: {e}"))
     if checks[0].status == PASS:
         try:
-            checks += check_price_sheet(sheet, prev)
+            checks += check_price_sheet(sheet, prev, repo / "prices" / "row-changes.json")
         except Exception as e:
             checks.append(Check("price sheet checks", FAIL, f"{type(e).__name__}: {e}"))
     return PriceResult(day, sheet, prev, checks)
