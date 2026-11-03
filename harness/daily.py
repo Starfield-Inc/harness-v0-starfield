@@ -237,8 +237,18 @@ def run_day(day, repo, env, skip_gpu=False, skip_publish=False, fakes=None, out=
     return checks, published, crashed
 
 
+def _nothing_new(checks, published) -> bool:
+    """A rerun that found its pull request and reused today's prices and runs has nothing new to report."""
+    if not (published and published.found):
+        return False
+    reused = [c for c in checks if c.name in ("price read", "gpu runs")]
+    return bool(reused) and all(c.detail.startswith("already done") for c in reused)
+
+
 def _notify(day, repo, env, fakes, checks, price_result, gpu_result, published, out):
     """Post the Slack summary. Nothing in here may change the exit code or raise."""
+    if _nothing_new(checks, published):
+        return
     try:
         notify = fakes.get("notify", slack_notify.notify_run)
         notify(day, repo, env, checks, price_result, gpu_result, published, out)

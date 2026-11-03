@@ -220,7 +220,7 @@ python3 -m harness.daily --dry-run
 
 ## Install the schedule
 
-The schedule is a macOS LaunchAgent. It runs `python3 -m harness.daily` once a day in your login session, so the keychain holds the ssh key the job needs. The files are in `scripts/launchd/`.
+The schedule is a macOS LaunchAgent. It runs `python3 -m harness.daily` at the set time each day and each time you log in, in your login session, so the keychain holds the ssh key the job needs. The files are in `scripts/launchd/`.
 
 1. Write the env file outside the repository, with the keys above.
 2. Run the installer with your own paths. The hour and minute are optional and default to 6 and 0.
@@ -232,7 +232,7 @@ scripts/launchd/install.sh --python /path/to/python3 --repo /path/to/this/repo \
 
 3. The installer writes `~/Library/LaunchAgents/net.starfield.harness-daily.plist` and prints a `launchctl bootstrap` command. Paths can contain `&`, `<` and `>`. The installer does not run that command. Run it yourself to load the job.
 
-Standard output and standard error go to two files in the log directory. To remove the job, run `scripts/launchd/install.sh --uninstall`. It prints the `launchctl bootout` command and the file to delete.
+The login run covers a day when the Mac was off at the set time. A rerun on the same day is safe. It reuses the day's prices and GPU runs, does not touch the host, and posts no Slack message when it finds its pull request and has nothing new. A login before the providers update their pages reads that day's earlier prices.\n\nStandard output and standard error go to two files in the log directory. To remove the job, run `scripts/launchd/install.sh --uninstall`. It prints the `launchctl bootout` command and the file to delete.
 
 ## Add a model
 

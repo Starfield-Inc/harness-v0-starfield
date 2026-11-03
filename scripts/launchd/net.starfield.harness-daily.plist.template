@@ -19,6 +19,8 @@
 		<key>PATH</key>
 		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
 	</dict>
+	<key>RunAtLoad</key>
+	<true/>
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Hour</key>

@@ -29,6 +29,7 @@ class PublishResult:
     pr_urls: list[str]
     draft: bool
     text: str = ""
+    found: bool = False
 
 
 def is_dry_run(env: dict) -> bool:

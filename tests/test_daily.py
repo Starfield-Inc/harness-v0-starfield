@@ -300,6 +300,29 @@ class TestRun(Case):
         self.assertEqual(code, 0)
 
 
+class TestSlackOnRerun(Case):
+    def rerun(self, gpu_detail, found=True, sheet_exists=True):
+        sent = []
+        if sheet_exists:
+            (self.repo / "data" / "prices" / f"price-sheet-{DAY}.csv").write_text(sheet_text(DAY))
+        gpu = lambda day, repo, env: GpuResult(day, [], None, [Check("gpu runs", PASS, gpu_detail)])
+        publish = lambda *a: PublishResult("abc", ["https://github.com/o/r/pull/1"], False, "", found)
+        self.main(gpu=gpu, publish=publish, notify=lambda *a: sent.append(a))
+        return sent
+
+    def test_rerun_with_existing_pr_and_reused_runs_posts_nothing(self):
+        self.assertEqual(self.rerun("already done: 3 run files for the day, the host was not used"), [])
+
+    def test_existing_pr_but_new_gpu_runs_still_posts(self):
+        self.assertEqual(len(self.rerun("3 of 3 models exited 0")), 1)
+
+    def test_new_pr_posts(self):
+        self.assertEqual(len(self.rerun("already done: 3 run files", found=False)), 1)
+
+    def test_first_run_of_the_day_posts(self):
+        self.assertEqual(len(self.rerun("ok", found=False, sheet_exists=False)), 1)
+
+
 class TestArgsAndDryRun(Case):
     def test_bad_arguments_exit_2(self):
         out = io.StringIO()

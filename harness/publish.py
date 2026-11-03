@@ -449,7 +449,7 @@ def _found_pr(pr, branch, repo, ctx, ignored):
             check=False)
     text = scrub(" ".join([*ignored, f"Found the existing pull request {pr['url']}.", _data_status(sha, pushed)]) + "\n",
                  ctx.env)
-    return PublishResult(sha if pushed else "", [pr["url"]], draft, text)
+    return PublishResult(sha if pushed else "", [pr["url"]], draft, text, found=True)
 
 
 def _data_groups(day, price_result, gpu_result):
@@ -839,7 +839,7 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     _sh(runner, ["git", "push", "-u", "origin", branch], cwd=clone)
     result = _open_pr(day, branch, summary, checks, sha if pushed else "", harness_url, pushed, ctx)
     if local_note and result.pr_urls:
-        result = PublishResult(result.harness_sha, result.pr_urls, result.draft, scrub("\n".join(local_note) + "\n", ctx.env))
+        result = PublishResult(result.harness_sha, result.pr_urls, result.draft, scrub("\n".join(local_note) + "\n", ctx.env), result.found)
     return result
 
 
