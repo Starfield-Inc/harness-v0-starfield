@@ -26,7 +26,7 @@ from harness.scrub import scrub
 MAX_CHARS = 3000
 MAX_PRICE_LINES = 8
 MAX_CHECK_LINES = 6
-DETAIL_CHARS = 100
+DETAIL_CHARS = 300
 SPEED_FILE = re.compile(r"speed-(\d{4}-\d{2}-\d{2})\.csv")
 
 

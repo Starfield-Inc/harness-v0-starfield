@@ -85,10 +85,10 @@ class RunMessageTest(Base):
         self.assertIn("• No price sheet for today.", text)
 
     def test_failed_checks_capped_at_six_with_short_detail(self):
-        checks = [Check(f"c{i}", FAIL, "x" * 300) for i in range(8)] + [Check("ok", PASS, "fine")]
+        checks = [Check(f"c{i}", FAIL, "x" * 400) for i in range(8)] + [Check("ok", PASS, "fine")]
         text = self.build(checks)
         self.assertIn("Failed (8):", text)
-        self.assertIn("• c5: " + "x" * 97 + "...", text)
+        self.assertIn("• c5: " + "x" * 297 + "...", text)
         self.assertNotIn("c6", text)
         self.assertIn("• and 2 more checks", text)
         self.assertNotIn("All checks passed", text)
@@ -99,6 +99,13 @@ class RunMessageTest(Base):
         self.assertIn("• speed band: moved 3 percent", text)
         self.assertNotIn("All checks passed", text)
         self.assertNotIn("Failed", text)
+
+    def test_two_carried_rows_show_in_full(self):
+        detail = ("not on the provider's page, price from an earlier read: ('Mistral', 'Mistral Large 3') "
+                  "carried from 2026-10-30; ('Mistral', 'Mistral Medium 3.5') carried from 2026-10-30")
+        text = self.build([Check("carried rows", FLAG, detail)])
+        self.assertIn("'Mistral Medium 3.5') carried from 2026-10-30", text)
+        self.assertNotIn("...", text)
 
     def test_draft_wording(self):
         text = self.build([Check("c", FAIL, "bad")], ["https://github.com/o/r/pull/1"], draft=True)
