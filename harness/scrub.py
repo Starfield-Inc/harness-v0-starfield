@@ -25,6 +25,7 @@ SECRETS = re.compile(
     r"|(?<![A-Za-z0-9])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+"
     r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}"
     r"|(?<![A-Za-z0-9])xox[a-z]-[A-Za-z0-9-]+"
+    r"|(?<![A-Za-z0-9])xoxe[.-][A-Za-z0-9.-]+"
     r"|(?<![A-Za-z0-9])xapp-[A-Za-z0-9-]+"
     r"|(?<![A-Za-z0-9])AKIA[0-9A-Z]{12,}", re.S)
 AT_TOKEN = re.compile(r"(?<!\S)\S+@\S+")

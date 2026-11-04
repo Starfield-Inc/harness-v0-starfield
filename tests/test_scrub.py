@@ -103,6 +103,8 @@ class ScrubTest(unittest.TestCase):
         out = scrub("open failed for xapp-1-A0TEST-1234-abcdef0123 now", {})
         self.assertEqual(out, "open failed for <redacted> now")
         self.assertIn("secret", private_hits("token xapp-1-A0TEST-1234-abcdef0123", {}))
+        for rotating in ("xoxe.xapp-1-A0TEST-1234-abcdef0123", "xoxe-1-My0xTEST-refresh-0123"):
+            self.assertNotIn("TEST", scrub(f"open failed for {rotating} now", {}))
         env = {"SLACK_APP_TOKEN": "canary-app-token-1"}
         self.assertNotIn("canary-app-token-1", scrub("got canary-app-token-1 back", env))
 

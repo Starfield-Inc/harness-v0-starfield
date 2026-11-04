@@ -31,7 +31,7 @@ from harness.radar.state import write_json
 from harness.scrub import scrub
 
 REPO = Path(__file__).resolve().parents[2]
-APP_TOKEN = re.compile(r"xapp-[A-Za-z0-9-]+")
+APP_TOKEN = re.compile(r"(?:xoxe\.)?xapp-[A-Za-z0-9-]+")
 MEMBER_ID = re.compile(r"[UW][A-Z0-9]{2,20}")
 LOOPBACK_API = re.compile(r"http://127\.0\.0\.1:\d{1,5}/\S*")
 SITE_KEYS = ("HARNESS_SITE_REPO_URL", "HARNESS_SITE_WORKDIR", "HARNESS_GH_CONFIG_DIR")

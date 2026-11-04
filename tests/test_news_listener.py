@@ -385,6 +385,8 @@ class DaemonTest(Env):
         self.assertIn("the listener stopped with an error: ValueError", out)
         for secret in ("A0CANARY", "xapp-", "HOOKSECRET1", "RESPONSESECRET2"):
             self.assertNotIn(secret, out)
+        self.env["SLACK_APP_TOKEN"] = "xoxe.xapp-1-A0ROTATING-1234-abcdef"
+        self.assertEqual(listen._config(self.env, True).token, "xoxe.xapp-1-A0ROTATING-1234-abcdef")
         self.env["SLACK_APP_TOKEN"] = "xoxb-WRONG-KIND-SECRET"
         code, out = self.run_main()
         self.assertEqual(code, 2)
