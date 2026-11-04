@@ -67,7 +67,7 @@ def evidence(release: Release, org: Org, snap: Snapshot, day: date, settings: Se
                     any(UPDATE_WORD.search(i.title) for i in lab), tuple(notes), min(dated, default=None))
 
 
-def judge(release: Release, ev: Evidence, official: bool) -> Verdict:
+def judge(release: Release, ev: Evidence, official: bool, needed: int = 1) -> Verdict:
     """Candidate only if: official org, public repo with weight files, not a derivative, at least one signal,
     a minor dated update only with a lab post, and a text, vision or any-to-any model. Another kind that
     passes the rest and has a lab post is an "other release"."""
@@ -82,6 +82,8 @@ def judge(release: Release, ev: Evidence, official: bool) -> Verdict:
         fails.append(f"{release.derivation.value}" + (f" of {release.base_model}" if release.base_model else ""))
     if not ev.signals:
         fails.append("no signal")
+    elif len(ev.signals) < needed:
+        fails.append(f"{len(ev.signals)} signal, this lab needs {needed}")
     minor = names.dated_suffix(release.id) or ev.lab_calls_update
     if minor and Signal.LAB_POST not in ev.signals:
         fails.append("minor dated update without a lab post")
@@ -159,7 +161,7 @@ def radar_day(config: Config, snap: Snapshot, day: date, seen: dict[str, str], r
         if created < new_since and not (ev.first_signal and ev.first_signal >= new_since):
             continue
         recent.append(r)
-        verdict = judge(r, ev, official=True)
+        verdict = judge(r, ev, official=True, needed=1 if org.top else s.other_org_signals)
         if verdict.outcome is Outcome.REJECTED:
             rejected_verdicts.append(verdict)
         else:

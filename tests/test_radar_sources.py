@@ -144,6 +144,9 @@ class ConfigTest(unittest.TestCase):
         cfg = config.load()
         self.assertTrue(all(o.hf_author for o in cfg.orgs))
         self.assertEqual({o.hf_author for o in cfg.orgs if not o.verified}, set())
+        self.assertEqual({o.hf_author for o in cfg.orgs if o.top},
+                         {"nvidia", "Qwen", "meta-llama", "meta-models", "google", "mistralai", "deepseek-ai",
+                          "moonshotai", "zai-org", "openai", "microsoft"})
         self.assertEqual(len(cfg.orgs), 28)
         self.assertEqual((cfg.settings.cap, cfg.settings.max_repo_age_days), (3, 180))
 

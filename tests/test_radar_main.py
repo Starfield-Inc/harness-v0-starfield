@@ -17,8 +17,8 @@ CONFIG = {
     "settings": {"cap": 3, "candidate_days": 7, "signal_days_before": 7, "watch_days": 2},
     "press_feeds": [{"url": PRESS_A, "kind": "rss"}, {"url": PRESS_B, "kind": "rss"}],
     "orgs": [
-        {"name": "Qwen", "hf_author": "Qwen", "openrouter_prefixes": ["qwen"], "feeds": [{"url": LAB_FEED, "kind": "rss"}]},
-        {"name": "Moonshot AI", "hf_author": "moonshotai", "openrouter_prefixes": ["moonshotai"]},
+        {"name": "Qwen", "hf_author": "Qwen", "top": True, "openrouter_prefixes": ["qwen"], "feeds": [{"url": LAB_FEED, "kind": "rss"}]},
+        {"name": "Moonshot AI", "hf_author": "moonshotai", "top": True, "openrouter_prefixes": ["moonshotai"]},
     ],
 }
 

@@ -36,7 +36,7 @@ def _org(raw) -> Org:
         feeds=tuple(_feed(f, name) for f in raw.get("feeds", ())),
         pages=tuple(_page(p, name) for p in raw.get("pages", ())),
         github_atoms=tuple(str(u) for u in raw.get("github_atoms", ())),
-        verified=bool(raw.get("verified", True)))
+        verified=bool(raw.get("verified", True)), top=bool(raw.get("top", False)))
 
 
 def parse(raw: dict) -> Config:

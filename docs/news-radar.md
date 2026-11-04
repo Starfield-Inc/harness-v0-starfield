@@ -24,7 +24,7 @@ A recent repo is a candidate only when all of these hold:
 1. Its author is an org in `config/radar.json`.
 2. The repo is public and lists weight files (a tag such as `safetensors` or `gguf`).
 3. It is not a derivative. A `base_model:` tag of type `quantized`, `adapter` or `merge` makes it one. So does `finetune`, except for a fine-tune of the org's own base model of the same family (an instruct model of its base). A name marker (NVFP4, FP8, FP4, GGUF, ONNX, AWQ, GPTQ, MLX, INT4, INT8) also makes it a quantized copy. BF16 and FP16 are not copy markers, because labs such as NVIDIA put BF16 in the names of their original releases.
-4. It has at least one signal: on OpenRouter, on Hugging Face trending, a lab post, or two or more press outlets. A lab post or press item counts from 7 days before the repo was created up to the day of the run.
+4. It has the signals its lab needs. A top lab (`"top": true` in `config/radar.json`) needs one signal. Any other lab needs `other_org_signals` signals (default 2). The signals are: on OpenRouter, on Hugging Face trending, a lab post, or two or more press outlets. A lab post or press item counts from 7 days before the repo was created up to the day of the run. The top labs are NVIDIA, Qwen, Meta (both Hugging Face names), Google, Mistral, DeepSeek, Moonshot, Z.ai, OpenAI and Microsoft.
 5. A minor dated update needs a lab post. A name ending in `-MMDD` or `-YYMM` (such as `-0905` or `-2507`) is a minor update. So is a release whose lab headline calls it an update, and that headline does not count as a lab post.
 6. Its kind is text, vision or any-to-any. An image, audio, embedding, safety or other model that passes the rest and has a lab post is listed under "Other releases".
 

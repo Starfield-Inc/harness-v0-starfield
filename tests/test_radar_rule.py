@@ -8,15 +8,16 @@ DAY = date(2026, 11, 4)
 CONFIG = config.parse({
     "settings": {"cap": 3},
     "orgs": [
-        {"name": "Qwen", "hf_author": "Qwen", "openrouter_prefixes": ["qwen"]},
-        {"name": "Moonshot AI", "hf_author": "moonshotai", "openrouter_prefixes": ["moonshotai"]},
-        {"name": "DeepSeek", "hf_author": "deepseek-ai", "openrouter_prefixes": ["deepseek"]},
-        {"name": "NVIDIA", "hf_author": "nvidia", "openrouter_prefixes": ["nvidia"]},
-        {"name": "Meta Muse", "hf_author": "meta-models", "openrouter_prefixes": ["meta"]},
+        {"name": "Qwen", "hf_author": "Qwen", "top": True, "openrouter_prefixes": ["qwen"]},
+        {"name": "Moonshot AI", "hf_author": "moonshotai", "top": True, "openrouter_prefixes": ["moonshotai"]},
+        {"name": "DeepSeek", "hf_author": "deepseek-ai", "top": True, "openrouter_prefixes": ["deepseek"]},
+        {"name": "NVIDIA", "hf_author": "nvidia", "top": True, "openrouter_prefixes": ["nvidia"]},
+        {"name": "Meta Muse", "hf_author": "meta-models", "top": True, "openrouter_prefixes": ["meta"]},
+        {"name": "Liquid AI", "hf_author": "LiquidAI", "openrouter_prefixes": ["liquid"]},
     ],
 })
 ORG_OF = {"Qwen": "Qwen", "moonshotai": "Moonshot AI", "deepseek-ai": "DeepSeek", "nvidia": "NVIDIA",
-          "meta-models": "Meta Muse"}
+          "meta-models": "Meta Muse", "LiquidAI": "Liquid AI"}
 
 
 def release(repo, created="2026-11-03T10:00:00.000Z", tags=("safetensors",), pipeline="text-generation", **raw):
@@ -304,6 +305,20 @@ class NamesTest(unittest.TestCase):
     def test_variants_share_a_family_key(self):
         self.assertEqual(names.family_key("Qwen/Qwen3-4B-Instruct-2507"), names.family_key("Qwen/Qwen3-4B-Thinking-2507"))
         self.assertNotEqual(names.family_key("Qwen/Qwen3-Next-80B-A3B"), names.family_key("Qwen/Qwen3-8B"))
+
+
+class OtherLabTest(unittest.TestCase):
+    def test_a_lab_that_is_not_on_the_top_list_needs_two_signals(self):
+        repo = release("LiquidAI/LFM9-2B-Base")
+        one = run(snapshot([repo], lab={"Liquid AI": (post("LFM9 arrives"),)}))
+        self.assertEqual(ids(one.candidates), [])
+        self.assertIn("1 signal, this lab needs 2", one.rejected[0].reasons[0])
+        two = run(snapshot([repo], [router("liquid/lfm9-2b-base")], lab={"Liquid AI": (post("LFM9 arrives"),)}))
+        self.assertEqual(ids(two.candidates), ["LiquidAI/LFM9-2B-Base"])
+
+    def test_a_top_lab_needs_one_signal(self):
+        repo = release("Qwen/Qwen9-30B")
+        self.assertEqual(ids(run(snapshot([repo], [router("qwen/qwen9-30b")])).candidates), ["Qwen/Qwen9-30B"])
 
 
 if __name__ == "__main__":

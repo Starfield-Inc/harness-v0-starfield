@@ -36,6 +36,7 @@ class Org:
     pages: tuple[Page, ...] = ()
     github_atoms: tuple[str, ...] = ()
     verified: bool = True
+    top: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Settings:
     max_repo_age_days: int = 180
     signal_days_before: int = 7
     watch_days: int = 2
+    other_org_signals: int = 2
     hf_limit: int = 30
     backtest_hf_limit: int = 100
 
