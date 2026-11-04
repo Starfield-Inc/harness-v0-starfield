@@ -343,13 +343,13 @@ def build_pr_body(summary_lines, harness_sha, harness_url, checks, pushed=True):
     return "\n".join(lines) + "\n"
 
 
-def _safe_body(summary, harness_sha, harness_url, checks, pushed, env):
+def safe_pr_body(summary, harness_sha, harness_url, checks, pushed, env, scrubber=scrub):
     """Scrub the body, then blank any line the privacy patterns still match. Returns (body, checks)."""
-    body, removed = _remove_private_lines(scrub(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
+    body, removed = _remove_private_lines(scrubber(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
     if removed:
         checks = [*checks, Check("PR body privacy", FAIL,
                                  f"{removed} lines matched the privacy patterns and were replaced with <removed>")]
-        body, _ = _remove_private_lines(scrub(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
+        body, _ = _remove_private_lines(scrubber(build_pr_body(summary, harness_sha, harness_url, checks, pushed), env))
     return body, checks
 
 
@@ -398,7 +398,7 @@ def _dry_run_text(day, price_result, gpu_result, checks, env):
 PR_FIELDS = "number,url,isDraft,state,isCrossRepository,headRepositoryOwner,headRefName"
 
 
-def _existing_pr(gh_list_stdout, branch):
+def existing_pr(gh_list_stdout, branch):
     """The job's own pull request for the branch, and the URLs of others with the same branch name.
     A fork can open a pull request from a branch of the same name, so only one from this repository counts.
     A pull request closed without a merge is dropped, so a person can close a bad run and have the job open a new one."""
@@ -627,7 +627,7 @@ def next_variant(previous, count):
     return (previous + 1) % count
 
 
-def _variant_count(clone):
+def variant_count(clone):
     m = re.search(r"export const VARIANTS = \[([^\]]*)\]", (clone / "deploy" / "graphics.mjs").read_text(encoding="utf-8"))
     count = len(re.findall(r"'[^']*'", m.group(1))) if m else 0
     if not count:
@@ -664,7 +664,7 @@ def _make_cover(runner, clone, day, env):
         return Check("cover image", FAIL, f"{COVER_NOT_MADE} Chrome was not found; set HARNESS_CHROME to its path.")
     try:
         if not spec.exists():
-            variant = next_variant(_previous_variant(clone, day), _variant_count(clone))
+            variant = next_variant(_previous_variant(clone, day), variant_count(clone))
             spec.parent.mkdir(parents=True, exist_ok=True)
             spec.write_text(json.dumps({"hero": {"variant": variant}, "blocks": []}, indent=2) + "\n", encoding="utf-8")
         variant = json.loads(spec.read_text(encoding="utf-8"))["hero"]["variant"]
@@ -688,7 +688,7 @@ class _Site(NamedTuple):
 
 
 def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site):
-    body, checks = _safe_body(summary, sha, harness_url, checks, pushed, ctx.env)
+    body, checks = safe_pr_body(summary, sha, harness_url, checks, pushed, ctx.env)
     body_file = ctx.workdir / f"{branch}.pr-body.md"
     body_file.write_text(body, encoding="utf-8")
     # Fixed text and a date: there is nothing to scrub, and a private term that is also a common word would break it.
@@ -740,7 +740,7 @@ def _publish(day, repo, price_result, gpu_result, env, runner, progress):
     if found.returncode != 0:
         failed = Check("pull request lookup", FAIL, f"`gh pr list` failed: {_tail(found.stderr or found.stdout)}")
         return _report_locally(day, header, [*inputs, failed], env, runner)
-    existing, others = _existing_pr(found.stdout, branch)
+    existing, others = existing_pr(found.stdout, branch)
     ignored = [f"Ignored the pull request {u} from another repository, which has the same branch name." for u in others]
     header += ignored
     if existing:
