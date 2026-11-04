@@ -44,7 +44,7 @@ class SiteTest(unittest.TestCase):
     def test_message_from_real_pages_and_csvs(self):
         code, out, post = self.run_main()
         self.assertEqual((code, out), (0, ""))
-        lines = post.call_args.args[1].split("\n")
+        lines = post.call_args.args[1]["text"].split("\n")
         self.assertEqual(post.call_args.args[0], HOOK)
         self.assertEqual(lines[0], "<!here> *Model Watch, 30 Oct 2026*")
         self.assertIn(QWEN, lines)
@@ -77,11 +77,11 @@ class SiteTest(unittest.TestCase):
 
     def test_missing_csvs_omit_that_part(self):
         (self.assets / "speed-2026-10-30.csv").unlink()
-        text = self.run_main()[2].call_args.args[1]
+        text = self.run_main()[2].call_args.args[1]["text"]
         self.assertNotIn("output tokens/s", text)
         self.assertIn("No price changed", text)
         (self.assets / "price-sheet-2026-10-30.csv").unlink()
-        text = self.run_main()[2].call_args.args[1]
+        text = self.run_main()[2].call_args.args[1]["text"]
         self.assertNotIn("Findings", text)
         self.assertIn("*Live pages*", text)
 
@@ -89,7 +89,7 @@ class SiteTest(unittest.TestCase):
         old = self.assets / "speed-2026-10-29.csv"
         (self.assets / "speed-2026-10-27.csv").write_text(old.read_text().replace("2026-10-29", "2026-10-27"))
         old.unlink()
-        text = self.run_main()[2].call_args.args[1]
+        text = self.run_main()[2].call_args.args[1]["text"]
         self.assertIn("(on 27 Oct 239.7)", text)
 
     def test_labels(self):
@@ -102,7 +102,7 @@ class SiteTest(unittest.TestCase):
     def test_only_undated_pages_list_the_pages_without_findings(self):
         self.pages.write_text(json.dumps([PAGES[2], {**PAGES[2], "url": "https://starfield.net/research/corrections/",
                                                       "title": "Corrections", "date": None}]))
-        text = self.run_main()[2].call_args.args[1]
+        text = self.run_main()[2].call_args.args[1]["text"]
         self.assertNotIn("Findings", text)
         self.assertIn("How Model Watch gets its numbers is live: <https://starfield.net/research/methodology/"
                       "|starfield.net/research/methodology/>", text)
@@ -116,7 +116,7 @@ class SiteTest(unittest.TestCase):
 
     def test_undated_pages_do_not_decide_the_findings_day(self):
         self.pages.write_text(json.dumps([PAGES[0], PAGES[2]]))
-        lines = self.run_main()[2].call_args.args[1].split("\n")
+        lines = self.run_main()[2].call_args.args[1]["text"].split("\n")
         self.assertEqual(lines[0], "<!here> *Model Watch, 29 Oct 2026*")
         self.assertIn("• Qwen3-8B: 239.7 output tokens/s, first token 174 ms", lines)
         self.assertIn("How Model Watch gets its numbers is live: <https://starfield.net/research/methodology/"

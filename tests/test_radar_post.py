@@ -25,10 +25,10 @@ class PostCase(Case):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def record(self, url, text):
+    def record(self, url, payload):
         if self.fail_post:
             raise OSError(f"cannot reach {url}")
-        self.posts.append((url, text))
+        self.posts.append((url, payload["text"]))
         return 200
 
     def run_with_hooks(self, *args, extra=None, world=None):

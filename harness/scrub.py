@@ -3,7 +3,8 @@ import re
 from urllib.parse import urlsplit
 
 SECRET_KEYS = ("HARNESS_GPU_SSH", "HARNESS_GPU_WORKDIR", "HARNESS_GPU_ENV_PATH", "HARNESS_GPU_HF_HOME",
-               "HARNESS_SITE_WORKDIR", "HARNESS_GH_CONFIG_DIR", "HARNESS_DAILY_ENV", "HARNESS_DAILY_LOCK_DIR")
+               "HARNESS_SITE_WORKDIR", "HARNESS_GH_CONFIG_DIR", "HARNESS_DAILY_ENV", "HARNESS_DAILY_LOCK_DIR",
+               "SLACK_APP_TOKEN")
 SAFE_DOMAINS = ("github.com", "raw.githubusercontent.com", "starfield.net", "huggingface.co", "pypi.org", "docs.vllm.ai")
 # Dotted names that end in one of these are file names, not hosts.
 FILE_SUFFIXES = {"py", "json", "csv", "md", "txt", "log", "yml", "yaml", "toml", "html", "mjs", "js", "sh",
@@ -24,6 +25,7 @@ SECRETS = re.compile(
     r"|(?<![A-Za-z0-9])(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+"
     r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{8,}"
     r"|(?<![A-Za-z0-9])xox[a-z]-[A-Za-z0-9-]+"
+    r"|(?<![A-Za-z0-9])xapp-[A-Za-z0-9-]+"
     r"|(?<![A-Za-z0-9])AKIA[0-9A-Z]{12,}", re.S)
 AT_TOKEN = re.compile(r"(?<!\S)\S+@\S+")
 # name@version, as in torch@2.4 or actions/checkout@v4: a version after the at sign and no dot before it.

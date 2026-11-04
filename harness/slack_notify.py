@@ -165,8 +165,18 @@ def prepare(text, env, scrubber=scrub) -> str:
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS - 3] + "..."
 
 
-def post(url, text):
-    req = urllib.request.Request(url, data=json.dumps({"text": text}).encode(),
+def _prepare_blocks(value, env, scrubber):
+    """Every "text" string anywhere inside the blocks, prepared like the message text."""
+    if isinstance(value, dict):
+        return {k: prepare(v, env, scrubber) if k == "text" and isinstance(v, str) else
+                _prepare_blocks(v, env, scrubber) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_prepare_blocks(v, env, scrubber) for v in value]
+    return value
+
+
+def post(url, payload: dict):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return resp.status
@@ -177,13 +187,17 @@ def webhook(env) -> str:
     return env.get(key, "").strip()
 
 
-def send(url, text, env, out, quiet=False, scrubber=scrub) -> bool:
-    """Never raises and never prints the URL. True only when the message was posted."""
+def send(url, text, env, out, quiet=False, scrubber=scrub, blocks=None) -> bool:
+    """Never raises and never prints the URL. True only when the message was posted. text is the fallback
+    shown in notifications when blocks are given."""
     if not url:
         print("no webhook, skipping", file=out)
         return False
     try:
-        post(url, prepare(text, env, scrubber))
+        payload = {"text": prepare(text, env, scrubber)}
+        if blocks is not None:
+            payload["blocks"] = _prepare_blocks(blocks, env, scrubber)
+        post(url, payload)
         if not quiet:
             print("Slack message sent", file=out)
         return True

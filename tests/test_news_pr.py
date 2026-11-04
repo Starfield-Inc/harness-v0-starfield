@@ -156,10 +156,10 @@ class Case(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.write_inputs()
 
-    def record(self, url, text):
+    def record(self, url, payload):
         if self.post_fails:
             raise OSError(f"cannot reach {url}")
-        self.posts.append((url, text))
+        self.posts.append((url, payload["text"]))
         return 200
 
     def write_inputs(self, page=None, slug=SLUG, row_data=None):

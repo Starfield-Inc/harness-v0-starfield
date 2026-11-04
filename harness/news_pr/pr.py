@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from harness.checks import FAIL, PASS, Check, is_draft
-from harness.news_pr.model import KeywordRow, Link, NewsItem, branch_of
+from harness.news_pr.model import KeywordRow, Link, Marker, NewsItem, branch_of
 from harness.publish import PR_FIELDS, _sh, _tail, existing_pr, safe_pr_body
 from harness.radar.report import scrub_report
 
@@ -11,6 +11,17 @@ from harness.radar.report import scrub_report
 def marker(slug, keyword: KeywordRow) -> str:
     """The one line the Slack button listener reads. It holds no free text."""
     return f"<!-- news-pr slug={slug} row_in_map={'yes' if keyword.in_map else 'no'} status={keyword.status} -->"
+
+
+# What review.observe reads with gh pr view.
+PR_VIEW_FIELDS = ("number,url,title,state,isDraft,mergedAt,headRefName,headRefOid,"
+                  "isCrossRepository,author,body,statusCheckRollup")
+
+
+def parse_marker(body: str) -> Marker | None:
+    """The exact marker shape with key= and checks=, as the last non-empty line, occurring once, every field
+    checked. Anything else, an older marker included, is None."""
+    raise NotImplementedError
 
 
 def _cell(text):

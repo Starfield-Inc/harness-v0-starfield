@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from harness.checks import FAIL, FLAG, PASS, Check
-from harness.news_pr.model import NO_ROW, ROW_STATUSES, KeywordRow, NewsItem, branch_of
+from harness.news_pr.model import NO_ROW, ROW_STATUSES, Branch, KeywordRow, NewsItem, branch_of
 from harness.news_pr.page import PageError, parse_front_matter
 from harness.publish import DEFAULT_CHROME, AUTHOR, _sh, _tail, next_variant, scan_added_lines, variant_count
 
@@ -158,6 +158,29 @@ def gate(runner, clone_dir: Path, slug, env) -> list[Check]:
     private = (Check("no private text", FAIL, f"private text matched: {', '.join(hits)}") if hits else
                Check("no private text", PASS, "added lines scanned, no private text"))
     return [files, private]
+
+
+def approve_commands(slug: str) -> list[tuple[str, list[str] | None, dict | None, str]]:
+    """The approval's site commands, in the tuple shape of site_commands. argv None marks the publish flag
+    step (publish_front). seo:check is ["npm", "run", "seo:check", "--", "--published"]: without the "--" npm
+    eats the flag and the gate checks every page."""
+    raise NotImplementedError
+
+
+def open_branch(runner, url: str, workdir: Path, slug: str) -> Path:
+    """rmtree, clone, checkout -B news-<slug> origin/news-<slug>. The same folder as the PR job's clone."""
+    raise NotImplementedError
+
+
+def branch_facts(clone_dir: Path, slug: str) -> Branch:
+    """page_approved from parse_front_matter; row_ok from keyword_row (in the map, proposed or approved)."""
+    raise NotImplementedError
+
+
+def publish_front(clone_dir: Path, slug: str) -> Check:
+    """Exactly one draft: true line in the front matter becomes draft: false. FAIL when approved_by is
+    missing or the count is not one."""
+    raise NotImplementedError
 
 
 def commit_and_push(runner, clone_dir: Path, item: NewsItem):

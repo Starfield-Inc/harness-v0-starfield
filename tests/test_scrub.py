@@ -99,6 +99,13 @@ class ScrubTest(unittest.TestCase):
         self.assertTrue(out.startswith("token <redacted>"))
         self.assertTrue(out.endswith("done"))
 
+    def test_slack_app_token_is_removed_by_pattern_and_by_env(self):
+        out = scrub("open failed for xapp-1-A0TEST-1234-abcdef0123 now", {})
+        self.assertEqual(out, "open failed for <redacted> now")
+        self.assertIn("secret", private_hits("token xapp-1-A0TEST-1234-abcdef0123", {}))
+        env = {"SLACK_APP_TOKEN": "canary-app-token-1"}
+        self.assertNotIn("canary-app-token-1", scrub("got canary-app-token-1 back", env))
+
     def test_a_long_token_is_scrubbed_in_linear_time(self):
         start = time.monotonic()
         out = scrub("a" * 50000 + " gpu-01.lan " + "b" * 50000, {"HARNESS_PRIVATE_TERMS": "gpu"})

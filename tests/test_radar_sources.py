@@ -133,6 +133,29 @@ class StateTest(unittest.TestCase):
             with self.assertRaises(state.StateError):
                 state.read_seen(folder)
 
+    def test_add_rejected_keeps_the_form_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            path = folder / "rejected.json"
+            self.assertTrue(state.add_rejected(folder, "qwen/qwen3-5"))
+            self.assertEqual(json.loads(path.read_text()), ["qwen/qwen3-5"])
+            self.assertTrue(state.add_rejected(folder, "meta/llama-5"))
+            self.assertEqual(json.loads(path.read_text()), ["meta/llama-5", "qwen/qwen3-5"])
+            before = path.read_bytes()
+            self.assertFalse(state.add_rejected(folder, "qwen/qwen3-5"))
+            self.assertEqual(path.read_bytes(), before)
+
+            path.write_text('{"qwen/qwen3-5": "2026-11-01"}')
+            self.assertFalse(state.add_rejected(folder, "qwen/qwen3-5"))
+            self.assertTrue(state.add_rejected(folder, "meta/llama-5"))
+            self.assertEqual(json.loads(path.read_text()),
+                             {"qwen/qwen3-5": "2026-11-01", "meta/llama-5": date.today().isoformat()})
+            self.assertEqual(state.read_rejected(folder), {"qwen/qwen3-5", "meta/llama-5"})
+
+            path.write_text('"one key"')
+            with self.assertRaises(state.StateError):
+                state.add_rejected(folder, "meta/llama-5")
+
     def test_radar_dir(self):
         self.assertEqual(state.radar_dir({"HARNESS_RADAR_DIR": "/r", "HARNESS_DAILY_LOG_DIR": "/a/logs"}), Path("/r"))
         self.assertEqual(state.radar_dir({"HARNESS_DAILY_LOG_DIR": "/a/logs"}), Path("/a/radar"))

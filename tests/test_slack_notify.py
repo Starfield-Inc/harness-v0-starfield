@@ -157,7 +157,7 @@ class LiveMessageTest(Base):
 class PostTest(Base):
     def test_post_uses_a_ten_second_timeout_and_json(self):
         with mock.patch("urllib.request.urlopen") as op:
-            s.post(HOOK, "hello")
+            s.post(HOOK, {"text": "hello"})
         req = op.call_args.args[0]
         self.assertEqual(op.call_args.kwargs["timeout"], 10)
         self.assertEqual(req.data, b'{"text": "hello"}')
@@ -200,8 +200,8 @@ class MainTest(Base):
         code, out, post = self.run_main({"SLACK_WEBHOOK_URL_TEST": HOOK, "SLACK_WEBHOOK_URL_MAIN": "https://m.example/x"})
         self.assertEqual(code, 0)
         self.assertEqual(post.call_args.args[0], HOOK)
-        self.assertTrue(post.call_args.args[1].startswith("<!here>"))
-        self.assertIn(QWEN, post.call_args.args[1])
+        self.assertTrue(post.call_args.args[1]["text"].startswith("<!here>"))
+        self.assertIn(QWEN, post.call_args.args[1]["text"])
 
     def test_main_target_uses_the_main_hook(self):
         env = {"SLACK_TARGET": "main", "SLACK_WEBHOOK_URL_TEST": "https://t.example/x", "SLACK_WEBHOOK_URL_MAIN": HOOK}
@@ -221,7 +221,7 @@ class MainTest(Base):
         env = {"SLACK_WEBHOOK_URL_TEST": HOOK, "HARNESS_PRIVATE_TERMS": "gpubox7"}
         argv = ["run", "--day", "2026-10-30", "--check", "fail|gpu step|ssh to gpubox7 timed out"]
         _, out, post = self.run_main(env, argv)
-        sent = post.call_args.args[1]
+        sent = post.call_args.args[1]["text"]
         self.assertIn("gpu step", sent)
         self.assertNotIn("gpubox7", sent)
         self.assertNotIn("SECRET123", sent + out)
@@ -229,7 +229,7 @@ class MainTest(Base):
     def test_the_webhook_never_appears_in_output_or_message(self):
         env = {"SLACK_WEBHOOK_URL_TEST": HOOK}
         _, out, post = self.run_main(env)
-        self.assertNotIn("SECRET123", out + post.call_args.args[1])
+        self.assertNotIn("SECRET123", out + post.call_args.args[1]["text"])
 
 
 class NotifyRunTest(Base):
@@ -252,8 +252,8 @@ class NotifyRunTest(Base):
 
     def test_posts_with_earlier_speed_files_found_in_the_repo(self):
         post, _ = self.notify({"SLACK_WEBHOOK_URL_TEST": HOOK})
-        self.assertIn(QWEN, post.call_args.args[1])
-        self.assertIn("PR #9", post.call_args.args[1])
+        self.assertIn(QWEN, post.call_args.args[1]["text"])
+        self.assertIn("PR #9", post.call_args.args[1]["text"])
 
     def test_dry_run_prints_and_posts_nothing(self):
         post, out = self.notify({"SLACK_WEBHOOK_URL_TEST": HOOK, "HARNESS_DRY_RUN": "1"})
@@ -262,7 +262,7 @@ class NotifyRunTest(Base):
 
     def test_gpu_step_failed(self):
         post, _ = self.notify({"SLACK_WEBHOOK_URL_TEST": HOOK}, gpu=None, published=None)
-        self.assertIn("No speed data today", post.call_args.args[1])
+        self.assertIn("No speed data today", post.call_args.args[1]["text"])
 
     def test_never_raises(self):
         post, out = self.notify({"SLACK_WEBHOOK_URL_TEST": HOOK}, price=object())

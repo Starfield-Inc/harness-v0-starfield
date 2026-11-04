@@ -39,6 +39,11 @@ def _variant(text):
     return int(text)
 
 
+def _key(text):
+    """The --key option: a radar family key (FAMILY_KEY)."""
+    raise NotImplementedError
+
+
 def _parser():
     p = argparse.ArgumentParser(prog="harness.news_pr", description=__doc__.splitlines()[0])
     p.add_argument("--page", required=True)

@@ -335,7 +335,7 @@ class TestPublishChecks(Case):
 
         self.environ["SLACK_WEBHOOK_URL_TEST"] = "https://hooks.slack.test/x"
         sent = []
-        with mock.patch.object(daily.slack_notify, "post", lambda url, text: sent.append(text)):
+        with mock.patch.object(daily.slack_notify, "post", lambda url, payload: sent.append(payload["text"])):
             code, out = self.main(publish=publish)
         self.assertEqual(code, 0)
         self.assertEqual(len(sent), 1)

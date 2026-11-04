@@ -50,6 +50,22 @@ def read_rejected(folder: Path) -> set[str]:
     return {str(k) for k in raw}
 
 
+def add_rejected(folder: Path, key: str) -> bool:
+    """Add key to rejected.json in the form found: a list stays a sorted list, an object maps the key to
+    today's day. A missing file becomes a list. False when the key was already there, and the file is not
+    written."""
+    raw = _read(folder / "rejected.json")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, (list, dict)):
+        raise StateError("rejected.json must be a list or an object")
+    if key in {str(k) for k in raw}:
+        return False
+    data = sorted([*raw, key]) if isinstance(raw, list) else {**raw, key: date.today().isoformat()}
+    write_json(folder / "rejected.json", data)
+    return True
+
+
 def mark_seen(seen: dict[str, str], keys, day: date) -> dict[str, str]:
     """A key keeps its first day, so marking the same keys again changes nothing."""
     out = dict(seen)
