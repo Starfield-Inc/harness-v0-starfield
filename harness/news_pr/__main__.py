@@ -1,10 +1,12 @@
 """Open a pull request on the site repository for one news page.
 
-    python3 -m harness.news_pr --page PATH --row PATH [--date YYYY-MM-DD] [--hero-variant N] [--dry-run]
+    python3 -m harness.news_pr --page PATH --row PATH [--key ORG/FAMILY] [--date YYYY-MM-DD] [--hero-variant N]
+                                [--dry-run]
 
 See docs/news-pr.md. Exit code: 0 when a pull request exists for the item (opened now or found), 1 when not
 or on an error, 2 for bad arguments, an unreadable env file or a news folder inside a git repository.
 --dry-run runs the local pre-check only and exits 0 when it passes, 1 when it fails.
+--key is the radar family key; Not approved in Slack adds it to rejected.json. Without it nothing is recorded.
 """
 import argparse
 import os
@@ -16,7 +18,7 @@ from harness.checks import FAIL, is_draft, render_markdown
 from harness.daily import Lock, LockError, load_env
 from harness.network import wait_for_network, wait_seconds
 from harness.news_pr import slack
-from harness.news_pr.model import SLUG, Outcome
+from harness.news_pr.model import FAMILY_KEY, SLUG, Outcome
 from harness.news_pr.pr import public_hosts, source_table
 from harness.news_pr.run import NewsDirError, dry_run_lines, load, news_dir, publish_item, write_row
 from harness.publish import run_command
@@ -41,13 +43,16 @@ def _variant(text):
 
 def _key(text):
     """The --key option: a radar family key (FAMILY_KEY)."""
-    raise NotImplementedError
+    if not FAMILY_KEY.fullmatch(text):
+        raise argparse.ArgumentTypeError(f"not a radar family key like org/family-words: {text!r}")
+    return text
 
 
 def _parser():
     p = argparse.ArgumentParser(prog="harness.news_pr", description=__doc__.splitlines()[0])
     p.add_argument("--page", required=True)
     p.add_argument("--row", required=True)
+    p.add_argument("--key", type=_key, default=None)
     p.add_argument("--date", type=_day, default=None)
     p.add_argument("--hero-variant", type=_variant, default=None)
     p.add_argument("--dry-run", action="store_true")
@@ -109,7 +114,7 @@ def main(argv=None, out=None, environ=None, runner=run_command, wait=wait_for_ne
         with Lock(REPO, env, name="harness-news-pr"):
             if not wait(env):
                 print(f"No network after {wait_seconds(env)} seconds; the run goes on and may fail", file=out)
-            outcome = publish_item(item, checks, env, runner, args.hero_variant)
+            outcome = publish_item(item, checks, env, runner, args.hero_variant, args.key)
     except LockError as e:
         print(scrub(f"The news PR script did not start: {e}", env), file=out)
         return 1

@@ -30,6 +30,8 @@ SECRETS = re.compile(
 AT_TOKEN = re.compile(r"(?<!\S)\S+@\S+")
 # name@version, as in torch@2.4 or actions/checkout@v4: a version after the at sign and no dot before it.
 VERSION_REF = re.compile(r"v?\d[\w.+-]*")
+# A Slack member mention such as <@U0123ABCD>: the news card names who clicked.
+MENTION = re.compile(r"[(\[]*<@[UW][A-Z0-9]+>[).,;:\]]*")
 EMAIL = re.compile(r"[\w.+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
 # Letters, digits, dot, dash, underscore and slash: the characters of a host name or a path.
 TOKEN_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-")
@@ -93,6 +95,8 @@ def _redact_terms(text, terms):
 
 
 def _at_token(m: re.Match) -> str:
+    if MENTION.fullmatch(m.group()):
+        return m.group()
     core = m.group().strip("()[]<>.,;:'\"`")
     email = EMAIL.fullmatch(core)
     if email and _is_safe(email.group(1)):

@@ -165,13 +165,13 @@ def prepare(text, env, scrubber=scrub) -> str:
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS - 3] + "..."
 
 
-def _prepare_blocks(value, env, scrubber):
+def prepare_blocks(value, env, scrubber):
     """Every "text" string anywhere inside the blocks, prepared like the message text."""
     if isinstance(value, dict):
         return {k: prepare(v, env, scrubber) if k == "text" and isinstance(v, str) else
-                _prepare_blocks(v, env, scrubber) for k, v in value.items()}
+                prepare_blocks(v, env, scrubber) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_prepare_blocks(v, env, scrubber) for v in value]
+        return [prepare_blocks(v, env, scrubber) for v in value]
     return value
 
 
@@ -196,7 +196,7 @@ def send(url, text, env, out, quiet=False, scrubber=scrub, blocks=None) -> bool:
     try:
         payload = {"text": prepare(text, env, scrubber)}
         if blocks is not None:
-            payload["blocks"] = _prepare_blocks(blocks, env, scrubber)
+            payload["blocks"] = prepare_blocks(blocks, env, scrubber)
         post(url, payload)
         if not quiet:
             print("Slack message sent", file=out)

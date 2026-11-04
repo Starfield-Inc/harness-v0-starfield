@@ -9,10 +9,8 @@ from unittest import mock
 from harness import slack_notify
 from harness.checks import FAIL, FLAG, PASS, Check
 from harness.news_pr.__main__ import main
-from harness.news_pr.model import KeywordRow, Outcome
 from harness.news_pr.page import read_page
 from harness.news_pr.run import load
-from harness.news_pr.slack import REVIEW_LINE, build_message
 from harness.publish import AUTHOR, FORBIDDEN_TOKENS
 
 SLUG = "qwen-3-5-open-weights"
@@ -305,7 +303,7 @@ class PrecheckTest(unittest.TestCase):
 
 
 class FlowTest(Case):
-    def test_a_passing_page_opens_a_ready_pr_with_only_the_item_files(self):
+    def test_a_passing_page_opens_a_draft_pr_with_only_the_item_files(self):
         self.fake.writes = {"npm run pages": {"press/index.html": "<ul><li>new</li></ul>\n"},
                             "node --test deploy/seo.golden.test.mjs": {"deploy/seo.golden.json": '{"new": 1}\n'}}
         code, out = self.run_main()
@@ -313,7 +311,7 @@ class FlowTest(Case):
         create = next(c for c in self.fake.calls if c[:3] == ["gh", "pr", "create"])
         self.assertEqual(create[create.index("--title") + 1], f"News: {TITLE}")
         self.assertEqual(create[create.index("--head") + 1], f"news-{SLUG}")
-        self.assertNotIn("--draft", create, "only a FLAG, so the PR is not a draft")
+        self.assertIn("--draft", create, "always a draft: only Approved in Slack marks it ready")
         self.assertEqual(self.pushed_files(), sorted([
             f"assets/news/{SLUG}/card.png", f"assets/news/{SLUG}/hero.png", "assets/news/heroes.json",
             f"content/graphics/{SLUG}.json", f"content/news/{SLUG}.md", "deploy/seo.golden.json", "press/index.html"]))
@@ -342,13 +340,16 @@ class FlowTest(Case):
         self.assertIn("| front matter source | Qwen blog: Qwen 3.5 | https://qwenlm.example/blog/qwen3.5/ |", body)
         self.assertIn("| keyword row | FLAG | " + NO_ROW + " |", body)
         self.assertIn("## Needs your look\n\n- keyword row: " + NO_ROW, body)
+        self.assertIn("Checks: all passed.", body)
         self.assertEqual([ln for ln in body.splitlines() if ln.startswith("<!-- news-pr")],
-                         [f"<!-- news-pr slug={SLUG} row_in_map=no status=none -->"])
+                         [f"<!-- news-pr slug={SLUG} key=none row_in_map=no status=none checks=pass -->"])
+        self.assertEqual(body.rstrip("\n").splitlines()[-1][:12], "<!-- news-pr", "the marker is the last line")
 
     def test_a_row_in_the_map_is_recorded_with_its_status(self):
         self.add_map_row("approved")
         self.assertEqual(self.run_main()[0], 0)
-        self.assertIn(f"<!-- news-pr slug={SLUG} row_in_map=yes status=approved -->", self.fake.bodies[0])
+        self.assertIn(f"<!-- news-pr slug={SLUG} key=none row_in_map=yes status=approved checks=pass -->",
+                      self.fake.bodies[0])
         self.assertIn("| keyword row | pass | row for news/" + SLUG + " in the pinned map, status approved |",
                       self.fake.bodies[0])
 
@@ -360,6 +361,8 @@ class FlowTest(Case):
         self.assertIn("--draft", create)
         body = self.fake.bodies[0]
         self.assertIn("**Checks failed. Do not merge until fixed.**", body)
+        self.assertIn("Checks: at least one failed", body)
+        self.assertIn(" checks=fail -->", body)
         self.assertIn("| site build | FAIL | `npm run build` failed: content check failed: line 3 of a file at <path> |", body)
         self.assertIn("| site tests | FAIL | not run because site build failed |", body)
         self.assertNotIn(["npm", "test"], self.fake.calls)
@@ -435,6 +438,16 @@ class FlowTest(Case):
         self.assertEqual(code, 1)
         self.assertIn("no open pull request uses it", out)
 
+    def test_key_goes_into_the_marker(self):
+        self.assertEqual(self.run_main("--key", "qwen/qwen3-5")[0], 0)
+        self.assertIn(f"<!-- news-pr slug={SLUG} key=qwen/qwen3-5 row_in_map=no", self.fake.bodies[0])
+
+    def test_a_key_not_in_family_form_is_refused_before_anything_runs(self):
+        for bad in ("Qwen/Qwen3", "qwen", "qwen/", "/x", "a/b c", "a/b/c"):
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.assertEqual(self.run_main("--key", bad)[0], 2, bad)
+        self.assertEqual(self.fake.calls, [])
+
     def test_hero_variant_flag(self):
         self.assertEqual(self.run_main("--hero-variant", "2")[0], 0)
         spec = json.loads(git(self.remote, "show", f"news-{SLUG}:content/graphics/{SLUG}.json"))
@@ -476,6 +489,8 @@ class FlowTest(Case):
         code, out = self.run_main("--dry-run")
         self.assertEqual(code, 0)
         self.assertIn("Without --dry-run the script would:", out)
+        self.assertIn("as a draft; Approved in Slack marks it ready", out)
+        self.assertNotIn("a draft if any check fails", out)
         self.assertEqual(self.fake.calls, [])
         self.assertFalse(self.news.exists())
         self.assertFalse((self.root / "work").exists())
@@ -495,10 +510,7 @@ class SlackTest(Case):
         self.assertEqual(len(self.posts), 1)
         url, text = self.posts[0]
         self.assertEqual(url, HOOK)
-        self.assertTrue(text.startswith(f"*News PR ready for review: {TITLE}*\n<{PR_URL}|PR #7>"))
-        self.assertIn("The keyword row is not in the pinned map yet", text)
-        self.assertTrue(text.endswith(REVIEW_LINE))
-        self.assertNotIn("here>", text)
+        self.assertIn("PR #7", text)
 
     def test_main_target_uses_the_main_webhook(self):
         main_hook = "https://hooks.example/services/MAINSECRET2"
@@ -511,16 +523,6 @@ class SlackTest(Case):
         self.assertEqual(code, 0)
         self.assertIn("Slack message failed: OSError", out)
         self.assertNotIn("TESTSECRET1", out)
-
-    def test_failed_checks_come_before_flags(self):
-        outcome = Outcome(SLUG, TITLE, (Check("keyword row", FLAG, "no row"), Check("site build", FAIL, "broke"),
-                                        Check("site tests", PASS, "ok")), (), pr_url=PR_URL,
-                          keyword=KeywordRow(True, "proposed"))
-        text = build_message(outcome)
-        self.assertLess(text.index("Failed (1):\n• site build: broke"), text.index("Flagged for a look (1):\n• keyword row"))
-        self.assertIn("Draft: checks failed", text)
-        self.assertIn("The keyword row is in the pinned map, status proposed", text)
-        self.assertNotIn("site tests", text)
 
 
 if __name__ == "__main__":

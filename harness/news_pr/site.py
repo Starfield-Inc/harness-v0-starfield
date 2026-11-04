@@ -2,16 +2,18 @@
 read the pinned keyword map, and gate the diff to the item's own files."""
 import csv
 import json
+import re
 import shutil
 from datetime import date
 from pathlib import Path
 
 from harness.checks import FAIL, FLAG, PASS, Check
 from harness.news_pr.model import NO_ROW, ROW_STATUSES, Branch, KeywordRow, NewsItem, branch_of
-from harness.news_pr.page import PageError, parse_front_matter
+from harness.news_pr.page import FRONT, PageError, parse_front_matter
 from harness.publish import DEFAULT_CHROME, AUTHOR, _sh, _tail, next_variant, scan_added_lines, variant_count
 
 KEYWORD_MAP = Path("deploy") / "seo" / "news-keyword-map.csv"
+DRAFT_TRUE = re.compile(r"draft:[ \t]*true[ \t]*")
 NO_ROW_TEXT = ("no row in the pinned keyword map yet; the page cannot go live until the SEO session's row is merged "
                "and the pin is bumped")
 
@@ -98,14 +100,17 @@ def _rendered(clone_dir, slug):
     return (clone_dir / "assets" / "news" / slug / "hero.png").exists() and slug in heroes
 
 
-def run_site_commands(runner, clone_dir: Path, slug, env) -> list[Check]:
-    """Each command is a check. After the first failure the rest are not run, since each needs the one before."""
+def run_site_commands(runner, clone_dir: Path, slug, env, commands=None) -> list[Check]:
+    """Each command is a check. After the first failure the rest are not run, since each needs the one before.
+    commands defaults to site_commands(slug, env); an argv of None is the publish flag step."""
     out, stopped = [], None
-    for name, argv, extra, detail in site_commands(slug, env):
+    for name, argv, extra, detail in commands if commands is not None else site_commands(slug, env):
         if stopped:
             out.append(Check(name, FAIL, f"not run because {stopped} failed"))
             continue
-        if name == "cover image" and not Path(env.get("HARNESS_CHROME") or DEFAULT_CHROME).exists():
+        if argv is None:
+            out.append(publish_front(clone_dir, slug))
+        elif name == "cover image" and not Path(env.get("HARNESS_CHROME") or DEFAULT_CHROME).exists():
             out.append(Check(name, FAIL, "Chrome was not found; set HARNESS_CHROME to its path"))
         elif extra and "UPDATE_GOLDEN" in extra and env.get("CI"):
             out.append(Check(name, FAIL, "not run: CI is set, and the golden file is never regenerated in CI"))
@@ -145,15 +150,15 @@ def allowed(path: str, slug: str) -> bool:
     return path in exact or (path.startswith(f"assets/news/{slug}/") and ".." not in path.split("/"))
 
 
-def gate(runner, clone_dir: Path, slug, env) -> list[Check]:
-    """The branch may hold only the item's own files, and no private text in any added line."""
+def gate(runner, clone_dir: Path, slug, env, base: str = "origin/main") -> list[Check]:
+    """The branch may hold only the item's own files, and no private text in any added line, compared with base."""
     _sh(runner, ["git", "add", "-A"], cwd=clone_dir)
-    names = _sh(runner, ["git", "diff", "--cached", "--name-only", "origin/main"], cwd=clone_dir).stdout.split()
+    names = _sh(runner, ["git", "diff", "--cached", "--name-only", base], cwd=clone_dir).stdout.split()
     outside = [n for n in names if not allowed(n, slug)]
     files = (Check("allowed files", FAIL, f"files outside the news item: {', '.join(outside[:10])}"
                    + (f" and {len(outside) - 10} more" if len(outside) > 10 else "")) if outside else
              Check("allowed files", PASS, f"{len(names)} files, all the news item's own"))
-    diff = _sh(runner, ["git", "diff", "--cached", "-U0", "origin/main", "--", ".", ":!*.png"], cwd=clone_dir).stdout
+    diff = _sh(runner, ["git", "diff", "--cached", "-U0", base, "--", ".", ":!*.png"], cwd=clone_dir).stdout
     hits = scan_added_lines(diff, env)
     private = (Check("no private text", FAIL, f"private text matched: {', '.join(hits)}") if hits else
                Check("no private text", PASS, "added lines scanned, no private text"))
@@ -164,23 +169,64 @@ def approve_commands(slug: str) -> list[tuple[str, list[str] | None, dict | None
     """The approval's site commands, in the tuple shape of site_commands. argv None marks the publish flag
     step (publish_front). seo:check is ["npm", "run", "seo:check", "--", "--published"]: without the "--" npm
     eats the flag and the gate checks every page."""
-    raise NotImplementedError
+    return [
+        ("site dependencies", ["npm", "ci"], None, "installed with npm ci"),
+        ("site approval", ["npm", "run", "news:approve", "--", slug], None,
+         "approved_by and approved_on written by the site's news:approve"),
+        ("publish flag", None, None, "draft: true became draft: false"),
+        ("site pages", ["npm", "run", "pages"], None, "shared page blocks synced with the page published"),
+        ("SEO golden file", ["node", "--test", "deploy/seo.golden.test.mjs"], {"UPDATE_GOLDEN": "1"},
+         "regenerated with UPDATE_GOLDEN=1"),
+        ("site content check", ["npm", "run", "content:check"], None, "content and guard checks passed"),
+        ("site SEO check", ["npm", "run", "seo:check", "--", "--published"], None, "SEO check of published pages passed"),
+        ("site tests", ["npm", "test"], None, "npm test passed"),
+    ]
 
 
 def open_branch(runner, url: str, workdir: Path, slug: str) -> Path:
     """rmtree, clone, checkout -B news-<slug> origin/news-<slug>. The same folder as the PR job's clone."""
-    raise NotImplementedError
+    path = workdir / branch_of(slug)
+    if path.exists():
+        shutil.rmtree(path)
+    _sh(runner, ["git", "clone", "-q", url, str(path)])
+    _sh(runner, ["git", "checkout", "-q", "-B", branch_of(slug), f"origin/{branch_of(slug)}"], cwd=path)
+    return path
 
 
 def branch_facts(clone_dir: Path, slug: str) -> Branch:
     """page_approved from parse_front_matter; row_ok from keyword_row (in the map, proposed or approved)."""
-    raise NotImplementedError
+    try:
+        front, _ = parse_front_matter((clone_dir / page_path(slug)).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, PageError):
+        front = {}
+    approved = bool(front.get("approved_by")) and bool(front.get("approved_on")) and front.get("draft") is False
+    keyword, _ = keyword_row(clone_dir, slug)
+    return Branch(page_approved=approved, row_ok=keyword.in_map and keyword.status in ROW_STATUSES)
 
 
 def publish_front(clone_dir: Path, slug: str) -> Check:
     """Exactly one draft: true line in the front matter becomes draft: false. FAIL when approved_by is
     missing or the count is not one."""
-    raise NotImplementedError
+    name, path = "publish flag", clone_dir / page_path(slug)
+    try:
+        text = path.read_text(encoding="utf-8")
+        front, _ = parse_front_matter(text)
+    except (OSError, UnicodeDecodeError, PageError) as e:
+        return Check(name, FAIL, f"{page_path(slug)} could not be read: {_tail(str(e))}")
+    if not front.get("approved_by"):
+        return Check(name, FAIL, "approved_by is missing, so the page stays a draft")
+    m = FRONT.match(text)
+    lines = m.group(1).split("\n") if m else []
+    hits = [i for i, line in enumerate(lines) if DRAFT_TRUE.fullmatch(line.rstrip("\r"))]
+    if len(hits) != 1:
+        return Check(name, FAIL, f"the front matter has {len(hits)} draft: true lines, not one")
+    lines[hits[0]] = lines[hits[0]].replace("true", "false", 1)
+    path.write_text(text[:m.start(1)] + "\n".join(lines) + text[m.end(1):], encoding="utf-8")
+    return Check(name, PASS, "draft: true became draft: false")
+
+
+def page_path(slug: str) -> Path:
+    return Path("content") / "news" / f"{slug}.md"
 
 
 def commit_and_push(runner, clone_dir: Path, item: NewsItem):

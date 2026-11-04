@@ -77,7 +77,8 @@ def dry_run_lines(item: NewsItem | None, checks) -> list[str]:
             f"- clone the site repository and make branch {b} from origin/main;",
             f"- add content/news/{item.slug}.md and content/graphics/{item.slug}.json, then run npm ci, content:check, "
             "build, graphics heroes, graphics check, pages, the SEO golden file, seo:check and npm test;",
-            f"- push {b} and open the pull request \"News: {item.title}\", a draft if any check fails;",
+            f"- push {b} and open the pull request \"News: {item.title}\" as a draft; Approved in Slack marks it "
+            "ready, and only when every check passed;",
             "- post the pull request link to the radar's Slack channel.", "", render_markdown(checks), "",
             "Sources:", "", *pr.source_table(item.page.sources())]
 
@@ -89,13 +90,13 @@ def _ctx(env, runner):
                ["--repo", slug] if slug else [], {"GH_CONFIG_DIR": _require(env, "HARNESS_GH_CONFIG_DIR")})
 
 
-def _stop(item, checks, lines, **kw):
-    return Outcome(item.slug, item.title, tuple(checks), tuple(lines), sources=item.page.sources(), **kw)
-
-
-def publish_item(item: NewsItem, checks, env, runner, hero_variant=None) -> Outcome:
+def publish_item(item: NewsItem, checks, env, runner, hero_variant=None, key=None) -> Outcome:
     """Steps 2 to 6 for an item whose pre-check passed. A failed site command is a FAIL check; a failed clone,
-    commit or push raises, and main reports it. Only an Outcome with a pull request on it has pr_url."""
+    commit or push raises, and main reports it. Only an Outcome with a pull request on it has pr_url.
+    key is the radar family key; it goes into the marker and the Outcome."""
+    def _stop(item, checks, lines, **kw):
+        return Outcome(item.slug, item.title, tuple(checks), tuple(lines), sources=item.page.sources(), key=key, **kw)
+
     ctx = _ctx(env, runner)
     ctx.workdir.mkdir(parents=True, exist_ok=True)
     branch = branch_of(item.slug)
@@ -129,7 +130,7 @@ def publish_item(item: NewsItem, checks, env, runner, hero_variant=None) -> Outc
         return _stop(item, all_checks, [*ignored, "The branch held files outside the news item or private text, "
                                         "so nothing was pushed and no pull request was opened."], keyword=keyword)
 
-    body, all_checks = pr.build_body(item, all_checks, keyword, env)
+    body, all_checks = pr.build_body(item, all_checks, keyword, env, key)
     site.commit_and_push(ctx.runner, clone_dir, item)
     url, made = pr.create(ctx, item, body, all_checks)
     lines = [*ignored, f"Opened {url}." if url else

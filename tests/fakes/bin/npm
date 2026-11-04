@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "${FAKE_PYTHON:-python3}" -B -I "$(dirname "$0")/../shims.py" npm "$@"
