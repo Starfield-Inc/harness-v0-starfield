@@ -146,8 +146,8 @@ def _page_line(page) -> str:
 
 
 def build_live_message(day, pages, speed_csv=None, previous_speed_csvs=(), price_sheet=None,
-                       previous_price_sheet=None) -> str:
-    lines = [f"<!here> *Model Watch, {fmt_day(day)}*"]
+                       previous_price_sheet=None, heading="Model Watch") -> str:
+    lines = [f"<!here> *{heading}, {fmt_day(day)}*"]
     findings = []
     if speed_csv:
         findings += speed_lines(speed_csv, previous_speed_csvs)

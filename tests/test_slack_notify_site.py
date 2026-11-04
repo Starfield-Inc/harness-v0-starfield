@@ -56,6 +56,25 @@ class SiteTest(unittest.TestCase):
         self.assertIn("How Model Watch gets its numbers is live: <https://starfield.net/research/methodology/"
                       "|starfield.net/research/methodology/>", lines)
 
+    def test_news_only_deploy_has_a_news_heading_and_no_findings(self):
+        news = [{"url": "https://starfield.net/news/example-model/", "path": "/news/example-model/",
+                 "title": "Example Model: what the release shows", "kind": "news", "date": None, "status": "new"}]
+        with mock.patch("harness.slack_notify_site.date") as today:
+            today.today.return_value = date(2026, 11, 4)
+            today.fromisoformat = date.fromisoformat
+            text = site.build(news, self.assets)
+        self.assertEqual(text.split("\n"), [
+            "<!here> *News, 4 Nov 2026*", "", "*Live pages*",
+            "Example Model: what the release shows is live: <https://starfield.net/news/example-model/"
+            "|starfield.net/news/example-model/>"])
+
+    def test_news_page_beside_research_pages_keeps_the_model_watch_heading(self):
+        news = {"url": "https://starfield.net/news/example-model/", "path": "/news/example-model/",
+                "title": "Example Model", "kind": "news", "date": None, "status": "new"}
+        text = site.build([*PAGES, news], self.assets)
+        self.assertTrue(text.startswith("<!here> *Model Watch, 30 Oct 2026*"))
+        self.assertIn("Example Model is live:", text)
+
     def test_missing_csvs_omit_that_part(self):
         (self.assets / "speed-2026-10-30.csv").unlink()
         text = self.run_main()[2].call_args.args[1]

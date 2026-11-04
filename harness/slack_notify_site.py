@@ -2,7 +2,7 @@
 
     python3 -m harness.slack_notify_site --pages pages.json --assets SITE/assets/research
 
-pages.json is a list of {"url", "path", "title", "kind" (prices, model-watch or page), "date" or null,
+pages.json is a list of {"url", "path", "title", "kind" (prices, model-watch, news or page), "date" or null,
 "status" (new or updated)}. The webhook is SLACK_WEBHOOK_URL: the caller picks main or test.
 Prints nothing on success and always exits 0.
 """
@@ -57,10 +57,11 @@ def build(pages, assets: Path) -> str | None:
     if days:
         speed, prev_speed = _find(assets, "speed", day)
         prices, prev_prices = _find(assets, "price-sheet", day)
+    heading = "News" if all(p.get("kind") == "news" for p in pages) else "Model Watch"
     return build_live_message(
         date.fromisoformat(day),
         [(label(p), p["url"], p.get("status", "new")) for p in pages],
-        speed, [prev_speed] if prev_speed else [], prices, prev_prices)
+        speed, [prev_speed] if prev_speed else [], prices, prev_prices, heading)
 
 
 def main(argv=None, environ=None, out=None) -> int:
