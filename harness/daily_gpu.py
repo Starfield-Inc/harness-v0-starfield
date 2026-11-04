@@ -54,6 +54,10 @@ MODEL_LIMIT_SECONDS = 25 * 60
 MAX_POLL_FAILURES = 5
 KILL_AFTER_SECONDS = 10
 RUNNER_TIMEOUT_SECONDS = 900
+RETRY_STEPS = {"remote folders", "copy bundle", "remote checksum", "checkout", "remote tests", "write script"}
+RETRY_WAITS = (20, 60)
+RSYNC_CONNECTION_CODES = {12, 30, 35}
+CONNECTION_TEXTS = ("timed out", "connection refused", "connection reset", "banner exchange")
 SSH_OPTIONS = ["-o", "ConnectTimeout=15", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"]
 ENV_KEYS = ("HARNESS_GPU_SSH", "HARNESS_GPU_WORKDIR", "HARNESS_GPU_ENV_PATH", "HARNESS_GPU_HF_HOME")
 MODEL_ID = re.compile(r"[A-Za-z0-9._/-]+")
@@ -303,14 +307,25 @@ def print_plan(day: date, repo, env) -> str:
     return "\n".join(f"{name}: {shlex.join(argv)}" for name, argv in steps)
 
 
-def _call(runner, name, argv) -> str:
-    try:
-        code, out = runner(argv)
-    except OSError as e:
-        raise StepFailed(name, f"could not run: {e}")
-    if code != 0:
-        raise StepFailed(name, f"exit {code}: {out.strip()[-300:]}")
-    return out
+def _connection_problem(argv, code, out) -> bool:
+    if (argv[0] == "ssh" and code == 255) or (argv[0] == "rsync" and code in RSYNC_CONNECTION_CODES):
+        return True
+    return any(text in out.lower() for text in CONNECTION_TEXTS)
+
+
+def _call(runner, name, argv, sleep=time.sleep) -> str:
+    """Steps before the job starts are tried again after a connection problem. Other steps run once."""
+    waits = list(RETRY_WAITS) if name in RETRY_STEPS else []
+    while True:
+        try:
+            code, out = runner(argv)
+        except OSError as e:
+            raise StepFailed(name, f"could not run: {e}")
+        if code == 0:
+            return out
+        if not waits or not _connection_problem(argv, code, out):
+            raise StepFailed(name, f"exit {code}: {out.strip()[-300:]}")
+        sleep(waits.pop(0))
 
 
 def _log_markers(text):
@@ -370,7 +385,7 @@ def _previous_summaries(repo: Path, day: date) -> list[Path]:
     return found
 
 
-def _launch(runner, host, models, repo, stamp, checks) -> None:
+def _launch(runner, host, models, repo, stamp, checks, sleep=time.sleep) -> None:
     """Every step up to the start of the job. A failure here leaves nothing running on the host."""
     script = render_script(host, models, stamp)
     with tempfile.TemporaryDirectory() as tmp:
@@ -389,16 +404,16 @@ def _launch(runner, host, models, repo, stamp, checks) -> None:
         except OSError as e:
             raise StepFailed("bundle", f"cannot read the bundle: {e}")
         for name in ("remote folders", "copy bundle"):
-            _call(runner, name, steps[name])
-        out = _call(runner, "remote checksum", steps["remote checksum"]).split()
+            _call(runner, name, steps[name], sleep)
+        out = _call(runner, "remote checksum", steps["remote checksum"], sleep).split()
         remote_sha = out[0] if out else ""
         if remote_sha != local_sha:
             raise StepFailed("bundle checksum", f"local {local_sha[:12]}, remote {remote_sha[:12]}")
         checks.append(Check("bundle checksum", PASS, f"sha256 {local_sha[:12]} matches on the host"))
-        _call(runner, "checkout", steps["checkout"])
-        _call(runner, "remote tests", steps["remote tests"])
+        _call(runner, "checkout", steps["checkout"], sleep)
+        _call(runner, "remote tests", steps["remote tests"], sleep)
         checks.append(Check("remote tests", PASS, f"unit tests pass at {commit[:12]}"))
-        _call(runner, "write script", steps["write script"])
+        _call(runner, "write script", steps["write script"], sleep)
 
 
 def _collect(runner, host, models, repo, stamp, checks, text, staging) -> list[Path]:
@@ -600,7 +615,7 @@ def run(day: date, repo: Path, env: dict, runner=subprocess_runner, *,
     if fresh:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(clock()))
         try:
-            _launch(runner, host, models, repo, stamp, checks)
+            _launch(runner, host, models, repo, stamp, checks, sleep)
             record = {"stamp": stamp, "day": day.isoformat(), "models": [m["id"] for m in models],
                       "started": clock(), "done": []}
             try:

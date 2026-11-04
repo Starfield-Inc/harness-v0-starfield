@@ -839,5 +839,74 @@ class NoHostDetailsTest(unittest.TestCase):
                 self.assertIsNone(re.search(pattern, text, re.IGNORECASE), f"{path.name} matches {label}")
 
 
+class Flaky:
+    """Answers the first `times` runs of any argv holding `text` with `answer`, then lets the host reply."""
+
+    def __init__(self, host, text, answer, times):
+        self.host, self.text, self.answer, self.times = host, text, answer, times
+        self.attempts = []
+        self.sleeps = []
+
+    def __call__(self, argv):
+        if self.text in " ".join(argv):
+            self.attempts.append(list(argv))
+            if len(self.attempts) <= self.times:
+                self.host.calls.append(list(argv))
+                return self.answer
+        return self.host(argv)
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.host.sleep(seconds)
+
+
+class GpuRetryTest(unittest.TestCase):
+    setUp = DailyGpuTest.setUp
+    go = DailyGpuTest.go
+
+    def go_flaky(self, text, answer, times):
+        host = FakeHost(self.repo)
+        flaky = Flaky(host, text, answer, times)
+        result = daily_gpu.run(DAY, self.repo, ENV, flaky, sleep=flaky.sleep, clock=host.clock)
+        return host, flaky, result
+
+    def test_transient_banner_timeout_is_retried(self):
+        host, flaky, result = self.go_flaky(
+            "mkdir -p", (255, "Connection timed out during banner exchange"), 1)
+        self.assertEqual(len(flaky.attempts), 2)
+        self.assertEqual(flaky.sleeps[0], 20)
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+
+    def test_three_timeouts_fail_with_the_original_error(self):
+        answer = (255, "Connection timed out during banner exchange")
+        host, flaky, result = self.go_flaky("mkdir -p", answer, 5)
+        self.assertEqual(len(flaky.attempts), 3)
+        self.assertEqual(flaky.sleeps[:2], [20, 60])
+        self.assertEqual(result.checks[-1].status, FAIL)
+        self.assertIn("exit 255: Connection timed out during banner exchange", result.checks[-1].detail)
+        self.assertEqual(host.ran("nohup"), [])
+
+    def test_rsync_connection_codes_are_retried(self):
+        host, flaky, result = self.go_flaky("--timeout=60", (12, "error in rsync protocol data stream"), 2)
+        self.assertEqual(len([a for a in flaky.attempts if a[0] == "rsync" and "harness.bundle" in a[-1]]), 3)
+        self.assertEqual([c for c in result.checks if c.status == FAIL], [])
+
+    def test_failing_remote_unit_test_is_not_retried(self):
+        host, result = self.go(FakeHost(self.repo, tests_code=1))
+        self.assertEqual(len(host.ran("unittest")), 1)
+        self.assertEqual(result.checks[-1].name, "remote tests")
+
+    def test_failure_that_is_not_a_connection_problem_is_not_retried(self):
+        host, flaky, result = self.go_flaky("mkdir -p", (1, "mkdir: Permission denied"), 5)
+        self.assertEqual((len(flaky.attempts), flaky.sleeps), (1, []))
+        self.assertEqual(result.checks[-1].status, FAIL)
+
+    def test_start_is_never_retried(self):
+        host, flaky, result = self.go_flaky("nohup", (255, "Connection timed out during banner exchange"), 5)
+        self.assertEqual(len(flaky.attempts), 1)
+        self.assertEqual(flaky.sleeps, [])
+        self.assertTrue([c for c in result.checks if c.status == FAIL])
+
+
 if __name__ == "__main__":
     unittest.main()

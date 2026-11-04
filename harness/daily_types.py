@@ -30,6 +30,7 @@ class PublishResult:
     draft: bool
     text: str = ""
     found: bool = False
+    checks: list[Check] = field(default_factory=list)
 
 
 def is_dry_run(env: dict) -> bool:

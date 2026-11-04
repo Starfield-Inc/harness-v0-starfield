@@ -25,6 +25,7 @@ from pathlib import Path
 from harness import daily_prices, slack_notify
 from harness.checks import Check, FAIL, PASS, render_markdown
 from harness.daily_types import PriceResult, is_dry_run
+from harness.network import wait_for_network, wait_seconds
 from harness.publish import run_command, write_report
 from harness.scrub import scrub
 
@@ -231,6 +232,8 @@ def run_day(day, repo, env, skip_gpu=False, skip_publish=False, fakes=None, out=
     if not skip_publish:
         published, failure = _guarded(
             "publish step", lambda: _publish(day, repo, env, fakes, price_result, gpu_result))
+        # publish hands back the price and gpu checks too, so only the ones it added are new here
+        checks += [c for c in dict.fromkeys(published.checks if published else []) if c not in checks]
         checks.append(failure or Check("publish", PASS, ", ".join(published.pr_urls) or "no PR opened"))
         crashed += [failure] if failure else []
         _notify(day, repo, env, fakes, checks, price_result, gpu_result, published, out or sys.stdout)
@@ -309,6 +312,9 @@ def _main(argv, out, env, fakes, runner) -> int:
 
     def say(lines):
         print(scrub("\n".join(lines), env), file=out)
+
+    if not (args.dry_run or is_dry_run(env)) and not fakes.get("wait_for_network", wait_for_network)(env):
+        say([f"No network after {wait_seconds(env)} seconds, the run goes on and its checks will fail"])
 
     steps = [("prices", True), ("gpu", not args.skip_gpu), ("publish", not args.skip_publish)]
     if args.dry_run:

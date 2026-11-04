@@ -100,6 +100,39 @@ class Fake:
         return [c[0] for c in self.calls]
 
 
+SITE_URL = "https://github.com/Starfield-Inc/starfield-website.git"
+
+
+class GithubFake(Fake):
+    """The site URL is a GitHub URL, so the job can ask gh to compare branches. Git still runs against the
+    local bare repo, and `gh api .../compare` is answered from that repo's real history."""
+
+    def __init__(self, site_remote):
+        super().__init__()
+        self.site_remote = str(site_remote)
+        self.api_fails = False
+
+    def __call__(self, argv, cwd=None, env=None):
+        argv = [self.site_remote if a == SITE_URL else a for a in argv]
+        if argv[0] == "git" and any(a.startswith(("https://", "git@")) for a in argv):
+            raise AssertionError(f"git would reach GitHub: {argv}")
+        if argv[:2] == ["gh", "api"]:
+            self.calls.append((list(argv), cwd, env))
+            return self.compare(argv)
+        return super().__call__(argv, cwd, env)
+
+    def compare(self, argv):
+        if self.api_fails:
+            return subprocess.CompletedProcess(argv, 1, "", "gh: HTTP 502")
+        base, head = argv[2].split("/compare/", 1)[1].split("...")
+        behind, ahead = git(self.site_remote, "rev-list", "--left-right", "--count", f"{base}...{head}").split()
+        messages = [m.strip() for m in git(self.site_remote, "log", "--reverse", "--format=%B%x00",
+                                           f"{base}..{head}").split("\0") if m.strip()]
+        body = {"status": "ahead", "ahead_by": int(ahead), "behind_by": int(behind),
+                "commits": [{"commit": {"message": m}} for m in messages]}
+        return subprocess.CompletedProcess(argv, 0, json.dumps(body), "")
+
+
 class Setup:
     def __init__(self, root, changed=False):
         root = Path(root)
@@ -806,11 +839,121 @@ class PublishTests(unittest.TestCase):
         self.assertNotIn(["git", "merge", "--ff-only", "origin/main"], self.fake.argvs())
         self.assertNotIn("Local main was fast-forwarded", self.body())
 
+    def test_the_result_carries_the_checks_publish_added(self):
+        self.fake.fail_on = {"npm test"}
+        res = self.run_publish()
+        self.assertTrue(res.draft)
+        failed = [c for c in res.checks if c.status == FAIL]
+        self.assertEqual([c.name for c in failed], ["site tests"])
+        self.assertIn(Check("prices ok", PASS, "fine"), res.checks)
+        self.assertIn("price page matches sheet", [c.name for c in res.checks])
+
+    def test_a_failed_pr_create_is_in_the_result_checks(self):
+        self.fake.gh_fail = {"create"}
+        self.s.env["HARNESS_DAILY_LOG_DIR"] = str(Path(self.tmp.name) / "logs")
+        res = self.run_publish()
+        self.assertEqual(res.pr_urls, [])
+        self.assertIn("pull request", [c.name for c in res.checks if c.status == FAIL])
+
+    def test_the_local_main_note_keeps_the_checks_and_found(self):
+        res = self.run_publish()
+        self.assertIn("Local main was fast-forwarded", res.text)
+        self.assertIn(Check("harness push", PASS, "data commit pushed to origin main"), res.checks)
+        self.assertFalse(res.found)
+
     def test_price_change_is_flagged(self):
         s = Setup(Path(self.tmp.name) / "changed", changed=True)
         self.run_publish(s)
         body = (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
         self.assertIn("- price changes: xAI grok-4.7: output $6 -> $7", body)
+
+
+BRANCH = "daily-2026-10-30"
+JOB_COMMIT = "Daily price pages: prices read 30 Oct 2026"
+
+
+class StrandedBranchTests(unittest.TestCase):
+    """An earlier run pushed the site branch but `gh pr create` failed, so the branch has no pull request."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def setup(self, name, messages=(JOB_COMMIT,), behind=False):
+        root = Path(self.tmp.name) / name
+        root.mkdir()
+        s = Setup(root)
+        s.env["HARNESS_SITE_REPO_URL"] = SITE_URL
+        seed = root / "seed"
+        git(seed, "checkout", "-q", "-b", BRANCH)
+        for i, message in enumerate(messages):
+            (seed / f"part-{i}.txt").write_text("x\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", message)
+        git(seed, "push", "-q", "origin", BRANCH)
+        git(seed, "checkout", "-q", "main")
+        if behind:
+            (seed / "later.txt").write_text("x\n")
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "a later site change")
+            git(seed, "push", "-q", "origin", "main")
+        return s, GithubFake(s.site_remote), git(s.site_remote, "rev-parse", BRANCH)
+
+    def body(self, s):
+        return (Path(s.env["HARNESS_SITE_WORKDIR"]) / f"{BRANCH}.pr-body.md").read_text()
+
+    def create(self, fake):
+        return next(a for a in fake.argvs() if a[:3] == ["gh", "pr", "create"])
+
+    def test_a_branch_of_one_job_commit_is_deleted_and_built_again(self):
+        s, fake, old = self.setup("safe")
+        res = publish(DAY, s.repo, s.price, s.gpu, s.env, runner=fake)
+        self.assertFalse(res.draft)
+        self.assertEqual(res.pr_urls, [PR_URL])
+        compare = [a for a in fake.argvs() if a[:2] == ["gh", "api"]]
+        self.assertEqual(compare, [["gh", "api", f"repos/Starfield-Inc/starfield-website/compare/main...{BRANCH}"]])
+        pushes = [a for a in fake.argvs() if a[:2] == ["git", "push"]]
+        self.assertEqual(pushes, [["git", "push", str(s.site_remote), "--delete", BRANCH], DATA_PUSH,
+                                  ["git", "push", "-u", "origin", BRANCH]])
+        for argv in pushes:
+            self.assertFalse({"--force", "-f", "--force-with-lease"} & set(argv), argv)
+            self.assertFalse([a for a in argv if a.startswith("+")], argv)
+        self.assertIn("npm test", [" ".join(a[:2]) for a in fake.argvs()])
+        self.assertNotIn("--draft", self.create(fake))
+        self.assertNotIn("not run again", self.body(s))
+        new = git(s.site_remote, "rev-parse", BRANCH)
+        self.assertNotEqual(new, old)
+        self.assertEqual(git(s.site_remote, "rev-parse", f"{BRANCH}^"), git(s.site_remote, "rev-parse", "main"))
+        self.assertEqual(git(s.site_remote, "log", "-1", "--format=%s", BRANCH), JOB_COMMIT)
+
+    def test_a_branch_that_is_not_only_the_job_commit_is_opened_as_it_is(self):
+        cases = {"two commits ahead": dict(messages=(JOB_COMMIT, JOB_COMMIT)),
+                 "wrong message": dict(messages=("Fix a typo by hand",)),
+                 "behind main": dict(behind=True),
+                 "gh failure": dict()}
+        for i, (case, kw) in enumerate(cases.items()):
+            with self.subTest(case=case):
+                s, fake, old = self.setup(f"case{i}", **kw)
+                fake.api_fails = case == "gh failure"
+                res = publish(DAY, s.repo, s.price, s.gpu, s.env, runner=fake)
+                self.assertTrue(res.draft)
+                self.assertEqual(res.pr_urls, [PR_URL])
+                self.assertTrue([a for a in fake.argvs() if a[:2] == ["gh", "api"]], "the branch was compared")
+                self.assertFalse([a for a in fake.argvs() if a[:2] == ["git", "push"]])
+                self.assertEqual(git(s.site_remote, "rev-parse", BRANCH), old)
+                self.assertFalse([a for a in fake.argvs() if a[0] == "npm"])
+                self.assertIn("--draft", self.create(fake))
+                self.assertIn("not run again", self.body(s))
+                self.assertIn(Check("site checks", FAIL, f"not run again: the pull request is opened from the {BRANCH} "
+                                                         "branch an earlier run pushed"), res.checks)
+
+    def test_only_a_daily_branch_can_be_discarded(self):
+        compare = {"ahead_by": 1, "behind_by": 0, "commits": [{"commit": {"message": JOB_COMMIT}}]}
+        self.assertTrue(publish_module.stranded_branch_is_discardable(BRANCH, compare))
+        for name in ("main", "release-2026-10-30", "x-daily-2026-10-30"):
+            self.assertFalse(publish_module.stranded_branch_is_discardable(name, compare), name)
+        for bad in (None, {}, {"ahead_by": 1, "behind_by": 0, "commits": []}, {"ahead_by": "1", "commits": "x"}):
+            self.assertFalse(publish_module.stranded_branch_is_discardable(BRANCH, bad), bad)
 
 
 class CoverTests(unittest.TestCase):

@@ -96,6 +96,7 @@ class Case(unittest.TestCase):
         fakes.setdefault("gpu", self.gpu)
         fakes.setdefault("publish", self.publish)
         fakes.setdefault("runner", self.runner)
+        fakes.setdefault("wait_for_network", lambda env: True)
         out = io.StringIO()
         code = daily.main(["--date", str(DAY), "--repo", str(self.repo), *args],
                           out=out, environ=self.environ, fakes=fakes)
@@ -163,7 +164,7 @@ class TestRun(Case):
                 mock.patch.object(daily, "datetime", mock.Mock(now=now)):
             daily.main(["--repo", str(self.repo)], out=io.StringIO(), environ=self.environ,
                        fakes={"read_pages": self.reader, "gpu": self.gpu, "publish": self.publish,
-                              "runner": self.runner})
+                              "runner": self.runner, "wait_for_network": lambda env: True})
         self.assertEqual(self.published_with[0].day, date(2026, 11, 2))
         self.assertEqual(self.calls[0], "read")
 
@@ -321,6 +322,34 @@ class TestSlackOnRerun(Case):
 
     def test_first_run_of_the_day_posts(self):
         self.assertEqual(len(self.rerun("ok", found=False, sheet_exists=False)), 1)
+
+
+class TestPublishChecks(Case):
+    def test_a_failed_publish_check_is_listed_in_slack_and_the_log_once(self):
+        site_fail = Check("site tests", FAIL, "`npm test` failed: 2 tests broke")
+
+        def publish(day, repo, price_result, gpu_result, env):
+            # publish hands back every check of its run, the price and gpu ones included
+            checks = [*price_result.checks, *gpu_result.checks, site_fail, Check("pull request", PASS, "opened")]
+            return PublishResult("", ["https://github.com/o/r/pull/1"], True, checks=checks)
+
+        self.environ["SLACK_WEBHOOK_URL_TEST"] = "https://hooks.slack.test/x"
+        sent = []
+        with mock.patch.object(daily.slack_notify, "post", lambda url, text: sent.append(text)):
+            code, out = self.main(publish=publish)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(sent), 1)
+        failed = sent[0].split("*Checks*\n")[1].split("Flagged for a look")[0].split("*Review*")[0]
+        self.assertTrue(failed.startswith("Failed ("), failed)
+        self.assertIn("• site tests: `npm test` failed: 2 tests broke\n", failed)
+        self.assertIn("Draft: checks failed", sent[0])
+        self.assertEqual(out.count("| site tests | FAIL | `npm test` failed: 2 tests broke |"), 1)
+        self.assertEqual(out.count("| gpu runs |"), 1)
+        self.assertEqual(out.count("| price read |"), 1)
+        self.assertEqual(out.count("| pull request | pass | opened |"), 1)
+        table = out.splitlines()
+        self.assertLess(table.index("| pull request | pass | opened |"),
+                        next(i for i, line in enumerate(table) if line.startswith("| publish |")))
 
 
 class TestArgsAndDryRun(Case):
@@ -561,3 +590,30 @@ class TestInstallScript(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetworkWaitTest(Case):
+    def test_waits_once_for_the_network_with_the_env(self):
+        seen = []
+        code, _ = self.main(wait_for_network=lambda env: seen.append(dict(env)) or True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1)
+
+    def test_timeout_prints_one_line_and_the_run_goes_on(self):
+        self.environ["HARNESS_NETWORK_WAIT_SECONDS"] = "30"
+        code, out = self.main(wait_for_network=lambda env: False)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("No network after 30 seconds, the run goes on and its checks will fail"), 1)
+        self.assertEqual(self.calls, ["read", "gpu", "publish"])
+
+    def test_dry_run_flag_does_not_wait(self):
+        def boom(env):
+            raise AssertionError("waited")
+        code, _ = self.main("--dry-run", wait_for_network=boom)
+        self.assertEqual(code, 0)
+
+    def test_dry_run_env_does_not_wait(self):
+        def boom(env):
+            raise AssertionError("waited")
+        self.environ["HARNESS_DRY_RUN"] = "1"
+        self.main(wait_for_network=boom)

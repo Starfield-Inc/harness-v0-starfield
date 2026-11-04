@@ -68,7 +68,9 @@ If the job's own pull request exists, the job returns it and pushes nothing. It 
 
 In the last two cases, if someone marked the pull request ready for review, the job turns it back into a draft with `gh pr ready --undo`.
 
-If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way. The job opens a draft pull request from that branch as it is, with the same pushed or not pushed sentence. The FAIL check `site checks` says that the site checks were not run again.
+If the branch `daily-YYYY-MM-DD` exists on the site repository but has no pull request, an earlier run stopped part way, for example when `gh pr create` failed. If `gh api repos/<owner>/<repo>/compare/main...daily-YYYY-MM-DD` shows that the branch is one commit ahead of `main` and none behind, and that commit's message starts with `Daily price pages:`, the job deletes the branch with `git push <site repo URL> --delete daily-YYYY-MM-DD` and builds it again with every site check. Otherwise, or when gh fails, the job opens a draft pull request from the branch as it is, with the same pushed or not pushed sentence and the FAIL check `site checks`, which says that the site checks were not run again.
+
+Every check the publish step adds, such as `site tests` or `pull request`, also goes into the printed check table and the Slack run message, so a draft always shows the check that failed.
 
 The data commit is also safe to repeat. The job fetches `origin` and compares each of the day's files with `origin/main`. If `origin/main` already holds all of them, the job makes no commit and no push, and uses the commit that added them.
 
@@ -186,6 +188,7 @@ The push command is not a setting. The job always pushes with `git push origin d
 | `HARNESS_DAILY_LOCK_DIR` | The directory for the lock that stops two runs at once. |
 | `HARNESS_DAILY_LOG_DIR` | The directory for the local report when the job opens no pull request, when a step stops with an error, or when the lock is held. The default is the system temp directory. |
 | `HARNESS_CHROME` | The path of the Chrome program that renders the cover image. The default is `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. If the file is not there, the `cover image` check fails. |
+| `HARNESS_NETWORK_WAIT_SECONDS` | How long the job waits for the network at the start, in seconds. The default is 600. `0` turns the wait off. |
 | `HARNESS_DRY_RUN` | `1`, `true`, `yes` or `on`, in any case, turns on dry run. The GPU step lists its commands and runs none. The publish step makes no commit, no push, no clone and no pull request, and prints what it would do. Any other value, or no value, is a normal run. |
 | `HARNESS_PRIVATE_TERMS` | Comma-separated words that must never leave this machine, such as the real host name and the account name. The scrub removes them from the pull request, the local report and the printed output, and the privacy check fails if a result file holds one. The job adds the values from `ssh -G` for each run, except words that already appear in the public repository. |
 | `SLACK_WEBHOOK_URL_TEST` | The Slack webhook of the test channel. The job posts here unless `SLACK_TARGET` is `main`. |
@@ -233,6 +236,10 @@ scripts/launchd/install.sh --python /path/to/python3 --repo /path/to/this/repo \
 3. The installer writes `~/Library/LaunchAgents/net.starfield.harness-daily.plist` and prints a `launchctl bootstrap` command. Paths can contain `&`, `<` and `>`. The installer does not run that command. Run it yourself to load the job.
 
 The login run covers a day when the Mac was off at the set time. A rerun on the same day is safe. It reuses the day's prices and GPU runs, does not touch the host, and posts no Slack message when it finds its pull request and has nothing new. A login before the providers update their pages reads that day's earlier prices.\n\nStandard output and standard error go to two files in the log directory. To remove the job, run `scripts/launchd/install.sh --uninstall`. It prints the `launchctl bootout` command and the file to delete.
+
+A login run can start before Wi-Fi is up. At the start, the job looks up `github.com` in DNS every 15 seconds, for up to `HARNESS_NETWORK_WAIT_SECONDS` (600 by default, `0` turns the wait off). A dry run skips the wait. If the network does not come up in time, the job prints `No network after N seconds, the run goes on and its checks will fail` and carries on. The usual failure report then covers the run.
+
+Before the GPU job starts, the steps that talk to the host (remote folders, copy bundle, remote checksum, checkout, remote tests and write script) are tried again when the failure looks like a connection problem. That means ssh exit 255, rsync exit 12, 30 or 35, or output with "timed out", "Connection refused", "Connection reset" or "banner exchange". The job tries up to 3 times in all and waits 20 seconds, then 60 seconds, between tries. It never retries the start, poll or stop steps, a failing remote unit test, or a checksum mismatch. When the tries run out, the step fails as before.
 
 ## Add a model
 

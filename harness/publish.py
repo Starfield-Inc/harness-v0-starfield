@@ -14,7 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -33,6 +33,7 @@ NOT_PUSHED = "Data was not pushed to the public repository because checks failed
 LONG_COMMANDS = (["npm", "ci"], ["npm", "test"])
 SCRIPT_READS_FROM = date(2026, 10, 28)
 DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+SITE_COMMIT = "Daily price pages:"
 COVER_NOT_MADE = "The cover image for the new price page is not made here."
 NUMBER_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
 DEFAULT_NOTES = (
@@ -375,7 +376,7 @@ def _report_locally(day, summary, checks, env, runner, pushed_sha=""):
     """No pull request could be opened: keep the report on this machine."""
     text = "\n".join([*summary, *_public_line(pushed_sha), "No pull request was opened.", "", render_markdown(checks), ""])
     text = write_report(day, text, env, runner, f"No pull request was opened for {fmt_day(day)}.")
-    return PublishResult(pushed_sha, [], is_draft(checks), text)
+    return PublishResult(pushed_sha, [], is_draft(checks), text, checks=checks)
 
 
 def _dry_run_text(day, price_result, gpu_result, checks, env):
@@ -450,6 +451,33 @@ def _found_pr(pr, branch, repo, ctx, ignored):
     text = scrub(" ".join([*ignored, f"Found the existing pull request {pr['url']}.", _data_status(sha, pushed)]) + "\n",
                  ctx.env)
     return PublishResult(sha if pushed else "", [pr["url"]], draft, text, found=True)
+
+
+def stranded_branch_is_discardable(branch, compare):
+    """True when the site branch holds only the job's own site commit on top of main. `compare` is the
+    parsed answer of `gh api repos/<slug>/compare/main...<branch>`, or None when gh failed."""
+    try:
+        commits = compare["commits"]
+        return (branch.startswith("daily-") and compare["ahead_by"] == 1 and compare["behind_by"] == 0
+                and len(commits) == 1 and commits[0]["commit"]["message"].startswith(SITE_COMMIT))
+    except (KeyError, TypeError, IndexError):
+        return False
+
+
+def _discard_stranded(branch, url, repo, ctx):
+    """Delete a site branch that an earlier run pushed without a pull request, when nothing else is on it,
+    so the run builds it again with every site check. Returns whether the branch was deleted."""
+    if not ctx.repo_args:
+        return False
+    res = _sh(ctx.runner, ["gh", "api", f"repos/{ctx.repo_args[1]}/compare/main...{branch}"], cwd=ctx.workdir,
+              env=ctx.gh_env, check=False)
+    try:
+        compare = json.loads(res.stdout) if res.returncode == 0 else None
+    except ValueError:
+        compare = None
+    if not stranded_branch_is_discardable(branch, compare):
+        return False
+    return _sh(ctx.runner, ["git", "push", url, "--delete", branch], cwd=repo, check=False).returncode == 0
 
 
 def _data_groups(day, price_result, gpu_result):
@@ -671,7 +699,7 @@ def _open_pr(day, branch, summary, checks, sha, harness_url, pushed, ctx: _Site)
     if res.returncode != 0:
         failed = Check("pull request", FAIL, f"`gh pr create` failed: {_tail(res.stderr or res.stdout)}")
         return _report_locally(day, summary, [*checks, failed], ctx.env, ctx.runner, sha)
-    return PublishResult(sha, [res.stdout.strip().splitlines()[-1]], is_draft(checks))
+    return PublishResult(sha, [res.stdout.strip().splitlines()[-1]], is_draft(checks), checks=checks)
 
 
 @dataclass
@@ -717,7 +745,8 @@ def _publish(day, repo, price_result, gpu_result, env, runner, progress):
     header += ignored
     if existing:
         return _found_pr(existing, branch, repo, ctx, ignored)
-    if _sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip():
+    if (_sh(runner, ["git", "ls-remote", "--heads", url, branch]).stdout.strip()
+            and not _discard_stranded(branch, url, repo, ctx)):
         sha, pushed, harness_url = _branch_data(branch, repo, ctx)
         retry = Check("site checks", FAIL, f"not run again: the pull request is opened from the {branch} branch an earlier run pushed")
         summary = [*header, f"An earlier run pushed the {branch} branch but opened no pull request. "
@@ -835,11 +864,11 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
                    f"{COVER_NOT_MADE} It needs `npm run graphics` on a machine with Chrome; the `cover image` check says why.")
     summary += local_note
 
-    _sh(runner, ["git", *AUTHOR, "commit", "-m", f"Daily price pages: prices read {fmt_day(day)}"], cwd=clone)
+    _sh(runner, ["git", *AUTHOR, "commit", "-m", f"{SITE_COMMIT} prices read {fmt_day(day)}"], cwd=clone)
     _sh(runner, ["git", "push", "-u", "origin", branch], cwd=clone)
     result = _open_pr(day, branch, summary, checks, sha if pushed else "", harness_url, pushed, ctx)
     if local_note and result.pr_urls:
-        result = PublishResult(result.harness_sha, result.pr_urls, result.draft, scrub("\n".join(local_note) + "\n", ctx.env), result.found)
+        result = replace(result, text=scrub("\n".join(local_note) + "\n", ctx.env))
     return result
 
 
