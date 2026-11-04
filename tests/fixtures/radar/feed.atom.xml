@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Releases</title>
+<entry><title>v2.0 Kimi K3</title><link rel="alternate" href="https://lab.test/k3"/><updated>2026-11-01T10:00:00Z</updated></entry>
+<entry><title>Docs fix</title><link href="https://lab.test/docs"/><published>2026-10-20T08:00:00+02:00</published></entry>
+</feed>
