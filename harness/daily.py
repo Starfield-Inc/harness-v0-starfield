@@ -70,14 +70,14 @@ class Lock:
     lock is ever left to take over. The file is never deleted, because a run could otherwise lock a file
     that another run had just deleted. The text (PID and start time) only tells a blocked run who holds it."""
 
-    def __init__(self, repo: Path, env: dict, runner=run_command):
+    def __init__(self, repo: Path, env: dict, runner=run_command, name="harness-daily"):
         folder = Path(env.get("HARNESS_DAILY_LOCK_DIR") or tempfile.gettempdir())
         try:
             folder.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             # no fallback: two runs could then lock two different files
             raise LockError(f"cannot make the lock folder {folder}: {e}")
-        self.path = folder / f"harness-daily-{Path(repo).resolve().name}.lock"
+        self.path = folder / f"{name}-{Path(repo).resolve().name}.lock"
         self.runner = runner
 
     def _mine(self):

@@ -1,6 +1,6 @@
 # News radar
 
-The radar finds new open-weight models from a fixed list of organizations and writes a ranked list of up to three candidates a day. A person picks one to write up. The radar does not post to Slack, open pull requests or write pages.
+The radar finds new open-weight models from a fixed list of organizations and writes a ranked list of up to three candidates a day. A person picks one to write up. The radar posts the candidates to Slack as text. It does not open pull requests or write pages.
 
 ## What it reads
 
@@ -70,9 +70,43 @@ An org with `verified: false` has not been checked against the live APIs. Its ca
 | `HARNESS_DAILY_LOG_DIR` | used to place the radar folder when `HARNESS_RADAR_DIR` is not set |
 | `HARNESS_SEO_MAP` | optional keyword map CSV (`news_url`, `query`), to flag "maybe covered" |
 | `HARNESS_SITE_NEWS_DIR` | optional site news folder (`<slug>.md`), to flag "maybe covered" |
+| `RADAR_SLACK_TARGET` | `main` posts to `SLACK_WEBHOOK_URL_MAIN`. Anything else, or unset, posts to `SLACK_WEBHOOK_URL_TEST`. The daily job's `SLACK_TARGET` is not read. |
+| `SLACK_WEBHOOK_URL_TEST`, `SLACK_WEBHOOK_URL_MAIN` | the two incoming webhooks, kept in the env file and never printed. With neither set, the radar does not post. |
+| `HARNESS_NETWORK_WAIT_SECONDS`, `HARNESS_DAILY_LOCK_DIR` | the network wait and the lock folder, as in the daily job |
 | `HARNESS_PRIVATE_TERMS` | words the scrub removes from the output, as in the daily job |
 
 "Maybe covered" only flags a candidate. It never removes one.
+
+## Slack message
+
+A normal run (not `--dry-run`, not `--backtest`) posts one message when it has at least one new candidate. A candidate that is in `seen.json` or `rejected.json` is not new. The message has no `@here` and no mentions, and no buttons yet.
+
+It starts with `News radar, 4 Nov 2026`. Then each candidate has a block:
+
+- the model name, then its org, release date and license tag (and "gated" when it is gated)
+- `Why it passed`: the signals that made it a candidate
+- `Hugging Face`, `Official post` and `Press` links, when there are any
+- `Maybe covered by`: slugs of pages that may already cover it, when there are any. It is a flag to check, not a rejection.
+- `To write this one up, tell the harness session: go for <family key>`. The family key is the name to give the harness session.
+
+When the message is sent for a candidate, API-only models appear below it under `Watch (weights not public yet)`, in one line. A run with no new candidate posts nothing, even when there are API-only models.
+
+Failed sources are not posted. The one exception is a run where every source failed: it posts the heading and one line saying so, and exits with code 1.
+
+The run writes `seen.json` only after the post worked. If the post fails, the run prints `Slack message failed` and its exit code does not change. The same candidates go out on the next run. With no webhook set, nothing is posted and `seen.json` is written as before. Every message goes through the same scrub as the daily job. Links to hosts in `config/radar.json`, Hugging Face and OpenRouter are kept.
+
+## Install the schedule
+
+The radar runs as a second LaunchAgent, `net.starfield.harness-radar`. It runs `python3 -m harness.radar` at 10:30 local time each day and each time the job is loaded or you log in. Run the installer with your own paths. The hour and minute are optional.
+
+```
+scripts/launchd/install.sh --job radar --python /path/to/python3 --repo /path/to/this/repo \
+  --logdir /path/to/logs --envfile /path/to/daily.env [--hour 10] [--minute 30]
+```
+
+The installer writes `~/Library/LaunchAgents/net.starfield.harness-radar.plist` and prints a `launchctl bootstrap` command. It does not run it. Without `--job` it installs the daily job, as before. Logs go to `harness-radar.out.log` and `harness-radar.err.log` in the log directory. `--job radar --uninstall` prints the `launchctl bootout` command and the file to delete.
+
+A run that writes takes a lock first, so two radar runs never overlap. The lock is separate from the daily job's. A run that finds the lock held prints that and exits with code 1. A run then waits for the network, up to `HARNESS_NETWORK_WAIT_SECONDS` (600 by default), and goes on if it never comes. `--dry-run` and `--backtest` skip the lock and the wait.
 
 ## How to run
 

@@ -159,9 +159,9 @@ def build_live_message(day, pages, speed_csv=None, previous_speed_csvs=(), price
     return "\n".join(lines)
 
 
-def prepare(text, env) -> str:
+def prepare(text, env, scrubber=scrub) -> str:
     """Scrub first: cutting first could leave half a secret that the scrub no longer matches."""
-    text = scrub(text, env)
+    text = scrubber(text, env)
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS - 3] + "..."
 
 
@@ -177,17 +177,19 @@ def webhook(env) -> str:
     return env.get(key, "").strip()
 
 
-def send(url, text, env, out, quiet=False) -> None:
-    """Never raises and never prints the URL."""
+def send(url, text, env, out, quiet=False, scrubber=scrub) -> bool:
+    """Never raises and never prints the URL. True only when the message was posted."""
     if not url:
         print("no webhook, skipping", file=out)
-        return
+        return False
     try:
-        post(url, prepare(text, env))
+        post(url, prepare(text, env, scrubber))
         if not quiet:
             print("Slack message sent", file=out)
+        return True
     except Exception as e:
         print(f"Slack message failed: {type(e).__name__}", file=out)
+        return False
 
 
 def notify_run(day, repo, env, checks, price_result, gpu_result, published, out=None) -> None:

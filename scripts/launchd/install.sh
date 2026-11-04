@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Writes the daily-job LaunchAgent plist and prints the launchctl command to run.
+# Writes a LaunchAgent plist (the daily job, or the radar with --job radar) and prints the launchctl command.
 # This script never calls launchctl.
 set -euo pipefail
 # bash 5.2 turns "&" in a ${var//pattern/replacement} replacement into the matched text,
@@ -14,10 +14,11 @@ TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
 usage() {
 	cat >&2 <<USAGE
 Usage:
-  install.sh --python PATH --repo DIR --logdir DIR --envfile FILE [--hour 0-23] [--minute 0-59]
-  install.sh --uninstall
+  install.sh --python PATH --repo DIR --logdir DIR --envfile FILE [--job daily|radar] [--hour 0-23] [--minute 0-59]
+  install.sh [--job daily|radar] --uninstall
 
-Writes $TARGET and prints the launchctl command. Defaults are hour 6, minute 0.
+Writes $TARGET and prints the launchctl command. Defaults are hour 6, minute 0 for daily
+and hour 10, minute 30 for radar.
 USAGE
 	exit 2
 }
@@ -30,7 +31,7 @@ xml_escape() {
 	printf '%s' "$s"
 }
 
-python="" repo="" logdir="" envfile="" hour="6" minute="0" uninstall=0
+python="" repo="" logdir="" envfile="" hour="" minute="" job="daily" uninstall=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--python) python="${2:?}"; shift 2 ;;
@@ -39,10 +40,20 @@ while [ $# -gt 0 ]; do
 	--envfile) envfile="${2:?}"; shift 2 ;;
 	--hour) hour="${2:?}"; shift 2 ;;
 	--minute) minute="${2:?}"; shift 2 ;;
+	--job) job="${2:?}"; shift 2 ;;
 	--uninstall) uninstall=1; shift ;;
 	*) usage ;;
 	esac
 done
+
+case "$job" in
+daily) default_hour=6; default_minute=0 ;;
+radar) LABEL="net.starfield.harness-radar"; TEMPLATE="$HERE/$LABEL.plist.template"
+	TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"; default_hour=10; default_minute=30 ;;
+*) echo "--job must be daily or radar" >&2; exit 2 ;;
+esac
+hour="${hour:-$default_hour}"
+minute="${minute:-$default_minute}"
 
 if [ "$uninstall" = 1 ]; then
 	echo "Run this to stop the job:"

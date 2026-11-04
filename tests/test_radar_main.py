@@ -5,8 +5,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
+from harness.daily import Lock
 from harness.radar import sources
-from harness.radar.__main__ import main
+from harness.radar.__main__ import REPO, main
 
 LAB_FEED = "https://lab.test/feed.xml"
 PRESS_A = "https://press-a.test/feed"
@@ -73,13 +74,14 @@ class Case(unittest.TestCase):
         self.radar = self.root / "radar"
         self.config = self.root / "radar.json"
         self.config.write_text(json.dumps(CONFIG))
-        self.env = {"HARNESS_RADAR_DIR": str(self.radar)}
+        self.env = {"HARNESS_RADAR_DIR": str(self.radar), "HARNESS_DAILY_LOCK_DIR": str(self.root / "locks"),
+                    "HARNESS_NETWORK_WAIT_SECONDS": "0"}
 
-    def run_radar(self, *args, world=None, env=None):
+    def run_radar(self, *args, world=None, env=None, wait=None):
         world = world or World(default_answers())
         out = io.StringIO()
         code = main(["--date", "2026-11-04", *args], out=out, environ=env or self.env, fetch=world.fetch,
-                     config_path=self.config)
+                     config_path=self.config, **({"wait": wait} if wait else {}))
         return code, out.getvalue(), world
 
     def section(self, text, name):
@@ -191,6 +193,44 @@ class BacktestTest(Case):
         self.run_radar("--backtest", "3", world=World(self.backtest_answers()))
         self.assertEqual((self.radar / "seen.json").read_text(), "{}")
         self.assertEqual([p.name for p in self.radar.iterdir()], ["seen.json"])
+
+
+class LockAndNetworkTest(Case):
+    def test_a_second_run_does_not_start_while_the_lock_is_held(self):
+        with Lock(REPO, self.env, name="harness-radar"):
+            world = World(default_answers())
+            code, out, world = self.run_radar(world=world, wait=lambda env: True)
+        self.assertEqual(code, 1)
+        self.assertIn("The radar did not start: another run holds", out)
+        self.assertEqual(world.urls, [])
+        self.assertFalse(self.radar.exists())
+
+    def test_the_daily_job_lock_does_not_block_the_radar(self):
+        with Lock(REPO, self.env):
+            code, _, _ = self.run_radar(wait=lambda env: True)
+        self.assertEqual(code, 0)
+
+    def test_the_lock_is_free_after_a_run(self):
+        self.run_radar(wait=lambda env: True)
+        self.assertEqual(self.run_radar(wait=lambda env: True)[0], 0)
+
+    def test_waits_for_the_network_once_before_fetching(self):
+        calls = []
+        world = World(default_answers())
+        self.run_radar(world=world, wait=lambda env: calls.append(len(world.urls)) or True)
+        self.assertEqual(calls, [0])
+
+    def test_no_network_prints_a_line_and_the_run_goes_on(self):
+        code, out, _ = self.run_radar(wait=lambda env: False, env={**self.env, "HARNESS_NETWORK_WAIT_SECONDS": "30"})
+        self.assertEqual(code, 0)
+        self.assertIn("No network after 30 seconds, the run goes on and its sources will fail", out)
+
+    def test_dry_run_and_backtest_skip_the_wait_and_the_lock(self):
+        def boom(env):
+            raise AssertionError("waited")
+        with Lock(REPO, self.env, name="harness-radar"):
+            self.assertEqual(self.run_radar("--dry-run", wait=boom)[0], 0)
+            self.run_radar("--backtest", "2", wait=boom)
 
 
 if __name__ == "__main__":

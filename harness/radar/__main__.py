@@ -2,8 +2,10 @@
 
     python3 -m harness.radar [--date YYYY-MM-DD] [--dry-run] [--backtest N]
 
-Writes radar-<date>.md and seen.json in the radar folder and prints the same list. --dry-run prints only.
---backtest N replays the last N days up to --date and prints only.
+Writes radar-<date>.md and seen.json in the radar folder, prints the same list and posts new candidates to
+Slack (see harness/radar/post.py). seen.json is written only after the post worked or when no webhook is set.
+--dry-run prints only. --backtest N replays the last N days up to --date and prints only.
+A run that writes takes a lock, so two runs never overlap, and waits for the network first.
 Exit code: 0 when at least one source answered, 1 when every source failed or on an error,
 2 for bad arguments, an unreadable env file or a bad config.
 """
@@ -13,14 +15,17 @@ import dataclasses
 import os
 import sys
 from datetime import date, datetime, timezone
+from pathlib import Path
 
-from harness.daily import load_env
-from harness.radar import backtest, covered, rule, sources, state
+from harness.daily import Lock, LockError, load_env
+from harness.network import wait_for_network, wait_seconds
+from harness.radar import backtest, covered, post, rule, sources, state
 from harness.radar.config import ConfigError, load as load_config
 from harness.radar.model import Failure
 from harness.radar.report import public_hosts, render, scrub_report
 from harness.scrub import scrub
 
+REPO = Path(__file__).resolve().parents[2]
 BACKTEST_NOTES = ("Feeds hold only their latest posts, so older lab posts and press may be missing.",
                   "OpenRouter lists only the models it serves today.")
 
@@ -46,7 +51,7 @@ def _parser():
     return p
 
 
-def main(argv=None, out=None, environ=None, fetch=None, config_path=None) -> int:
+def main(argv=None, out=None, environ=None, fetch=None, config_path=None, wait=wait_for_network) -> int:
     out = out or sys.stdout
     env = dict(os.environ if environ is None else environ)
     try:
@@ -60,7 +65,16 @@ def main(argv=None, out=None, environ=None, fetch=None, config_path=None) -> int
         print(scrub(f"The radar did not start: {e}", env), file=out)
         return 2
     try:
-        return _run(args, config, env, fetch or sources.http_fetch, out)
+        fetch = fetch or sources.http_fetch
+        if args.dry_run or args.backtest:
+            return _run(args, config, env, fetch, out)
+        with Lock(REPO, env, name="harness-radar"):
+            if not wait(env):
+                print(f"No network after {wait_seconds(env)} seconds, the run goes on and its sources will fail", file=out)
+            return _run(args, config, env, fetch, out)
+    except LockError as e:
+        print(scrub(f"The radar did not start: {e}", env), file=out)
+        return 1
     except Exception as e:
         print(scrub(f"The radar stopped with an error: {type(e).__name__}: {e}", env), file=out)
         return 1
@@ -95,10 +109,11 @@ def _run(args, config, env, fetch, out) -> int:
     if not args.dry_run:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"radar-{day}.md").write_text(text, encoding="utf-8")
-        updated = state.mark_seen(seen, (c.key for c in report.candidates), day)
-        if updated != seen:
-            state.write_json(folder / "seen.json", updated)
         print(f"Wrote radar-{day}.md in the radar folder.", file=out)
+        if post.notify(report, snap.sources_ok == 0, env, hosts, out):
+            updated = state.mark_seen(seen, (c.key for c in report.candidates), day)
+            if updated != seen:
+                state.write_json(folder / "seen.json", updated)
     return 0 if snap.sources_ok else 1
 
 
