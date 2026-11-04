@@ -257,7 +257,7 @@ def open_url(token: str, api_base: str = SLACK_API) -> str:
     """POST apps.connections.open with the bearer token. Returns the wss URL. Errors carry only Slack's
     error code."""
     if not (urlsplit(api_base).scheme == "https" or _loopback(api_base)):
-        raise Closed("apps.connections.open: the API base must be https")
+        raise Closed("Slack connect: the API base must be https")
     request = urllib.request.Request(api_base.rstrip("/") + "/apps.connections.open", data=b"", method="POST",
                                      headers={"Authorization": f"Bearer {token}",
                                               "Content-Type": "application/x-www-form-urlencoded"})
@@ -266,18 +266,18 @@ def open_url(token: str, api_base: str = SLACK_API) -> str:
         with opener.open(request, timeout=10) as res:
             data = json.loads(res.read())
     except urllib.error.HTTPError as e:
-        raise Closed(f"apps.connections.open: HTTP {e.code}") from None
+        raise Closed(f"Slack connect: HTTP {e.code}") from None
     except (OSError, ValueError) as e:
-        raise Closed(f"apps.connections.open: {type(e).__name__}") from None
+        raise Closed(f"Slack connect: {type(e).__name__}") from None
     if not isinstance(data, dict):
-        raise Closed("apps.connections.open: answer is not an object")
+        raise Closed("Slack connect: answer is not an object")
     if data.get("ok") is not True:
         code = data.get("error")
         code = code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else "unknown_error"
-        raise (AuthError if code in AUTH_ERRORS else Closed)(f"apps.connections.open: {code}")
+        raise (AuthError if code in AUTH_ERRORS else Closed)(f"Slack connect: {code}")
     url = data.get("url")
     if not isinstance(url, str) or not url:
-        raise Closed("apps.connections.open: answer has no url")
+        raise Closed("Slack connect: answer has no url")
     return url
 
 

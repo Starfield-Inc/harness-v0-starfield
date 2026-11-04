@@ -199,7 +199,7 @@ class AgainstFake(unittest.TestCase):
     def test_open_url_auth_error_holds_only_the_code(self):
         with self.assertRaises(AuthError) as caught:
             open_url("xapp-WRONG-2", self.slack.api_url)
-        self.assertEqual(str(caught.exception), "apps.connections.open: invalid_auth")
+        self.assertEqual(str(caught.exception), "Slack connect: invalid_auth")
 
     def test_bad_accept_key_is_refused(self):
         self.slack.bad_accept = True
@@ -384,7 +384,7 @@ class Serve(unittest.TestCase):
         self.assertEqual(sum(self.sleeps), 600)
         self.assertTrue(all(s <= 5 for s in self.sleeps))
         self.assertGreaterEqual(len(self.ticks), len(self.sleeps))
-        self.assertEqual(self.logs[0], "socket mode: apps.connections.open: invalid_auth; retry in 600 s")
+        self.assertEqual(self.logs[0], "socket mode: Slack connect: invalid_auth; retry in 600 s")
 
     def test_other_errors_back_off_doubling_to_60_s(self):
         def sleep(seconds):
