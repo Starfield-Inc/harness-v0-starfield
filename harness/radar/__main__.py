@@ -110,7 +110,8 @@ def _run(args, config, env, fetch, out) -> int:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"radar-{day}.md").write_text(text, encoding="utf-8")
         print(f"Wrote radar-{day}.md in the radar folder.", file=out)
-        if post.notify(report, snap.sources_ok == 0, env, hosts, out):
+        unposted = dataclasses.replace(report, candidates=tuple(c for c in report.candidates if c.key not in seen))
+        if post.notify(unposted, snap.sources_ok == 0, env, hosts, out):
             updated = state.mark_seen(seen, (c.key for c in report.candidates), day)
             if updated != seen:
                 state.write_json(folder / "seen.json", updated)

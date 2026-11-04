@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -112,6 +113,20 @@ class LiveRunTest(Case):
         self.assertEqual((self.radar / "seen.json").read_text(), seen)
         self.assertEqual((self.radar / "radar-2026-11-04.md").read_text(), md)
         self.assertEqual(sorted(p.name for p in self.radar.iterdir()), ["radar-2026-11-04.md", "seen.json"])
+
+    def test_a_rerun_on_the_same_day_does_not_post_again(self):
+        env = {**self.env, "SLACK_WEBHOOK_URL_TEST": "https://hooks.example/test"}
+        with mock.patch("harness.radar.post.send", return_value=True) as send:
+            self.run_radar(env=env)
+            self.run_radar(env=env)
+        self.assertEqual(send.call_count, 1)
+
+    def test_a_failed_post_is_tried_again_on_the_next_run(self):
+        env = {**self.env, "SLACK_WEBHOOK_URL_TEST": "https://hooks.example/test"}
+        with mock.patch("harness.radar.post.send", side_effect=[False, True]) as send:
+            self.run_radar(env=env)
+            self.run_radar(env=env)
+        self.assertEqual(send.call_count, 2)
 
     def test_candidate_seen_on_an_earlier_day_is_not_suggested_again(self):
         self.radar.mkdir()
