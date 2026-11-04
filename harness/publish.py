@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -157,6 +158,19 @@ def price_changes(today_sheet, previous_sheet):
     now = {(r["provider"], r["model"]) for r in today}
     out += [f"{r['provider']} {r['model']}: not read today" for r in prev if (r["provider"], r["model"]) not in now]
     return out
+
+
+def sheet_changed(today_sheet, previous_sheet):
+    """True when a price changed or a row was added or removed. Carried-forward rows count as unchanged."""
+    keys = lambda sheet: Counter((r["provider"], r["model"]) for r in read_sheet(sheet)[1])
+    return bool(price_changes(today_sheet, previous_sheet)) or keys(today_sheet) != keys(previous_sheet)
+
+
+def last_checked_line(read_day, previous_day, changed, page_day):
+    if not changed:
+        return f"Last checked: {fmt_day(read_day)}. No price changed since the {fmt_day(previous_day)} read."
+    return (f"Last checked: {fmt_day(read_day)}. Prices changed since the {fmt_day(previous_day)} read, "
+            f"see [the {fmt_day(page_day)} prices](/research/prices/{page_day.isoformat()}/).")
 
 
 def change_sentence(previous_day, changes):
@@ -611,6 +625,26 @@ def _add_index_line(clone, day, line):
     path.write_text(text.replace(marker, marker + line + "\n", 1), encoding="utf-8")
 
 
+LAST_CHECKED = re.compile(r"^Last checked:.*$", re.M)
+
+
+def _prices_hub(clone):
+    return clone / "content" / "research" / "prices.md"
+
+
+def _set_last_checked(clone, read_day, line):
+    path = _prices_hub(clone)
+    text = re.sub(r"^updated: .*$", f"updated: {read_day.isoformat()}", path.read_text(encoding="utf-8"), count=1, flags=re.M)
+    path.write_text(LAST_CHECKED.sub(lambda _: line, text, count=1), encoding="utf-8")
+
+
+def _has_speed_script(clone):
+    try:
+        return "speed" in json.loads((clone / "package.json").read_text(encoding="utf-8")).get("scripts", {})
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _add_to_pages_test(clone, day):
     path = clone / "deploy" / "pages.test.mjs"
     text = path.read_text(encoding="utf-8")
@@ -799,34 +833,33 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
 
     harness_url = "https://github.com/" + (_github_slug(json.loads(
         (clone / "deploy" / "harness-manifest.json").read_text(encoding="utf-8"))["harness"]["repo"]) or "")
-    previous_page = _latest_price_page(clone, day)
-    previous_day = read_sheet(price_result.previous_sheet)[0]
-    notes = notes_from_page(previous_page.read_text(encoding="utf-8")) if previous_page else None
-    if previous_page is None or notes is None:
-        flags_extra.append(Check("page notes", FLAG, "No earlier price page to copy the Notes from; the default notes are used."))
-    else:
-        flags_extra.append(Check("page notes", FLAG, f"The Notes section is copied from {previous_page.name}. Check each line still holds."))
-        if previous_page.stem.removeprefix("prices-") != previous_day.isoformat():
-            flags_extra.append(Check("previous page", FLAG,
-                                     f"The newest earlier page is {previous_page.name}, but the Change column compares with the {fmt_day(previous_day)} sheet."))
-    sheet_dir = str(Path(additions[0][0]).parent)
-    page_text = render_price_page(price_result.sheet, price_result.previous_sheet, _scripted_days(repo, day),
-                                  notes or DEFAULT_NOTES, sheet_dir, harness_url)
-    page_path = clone / "content" / "research" / f"prices-{day.isoformat()}.md"
-    page_path.write_text(page_text, encoding="utf-8")
+    read_day, previous_day = read_sheet(price_result.sheet)[0], read_sheet(price_result.previous_sheet)[0]
     changes = price_changes(price_result.sheet, price_result.previous_sheet)
-    _add_index_line(clone, day, index_line(day, previous_day, changes))
-    _add_to_pages_test(clone, day)
+    changed = sheet_changed(price_result.sheet, price_result.previous_sheet)
+    has_last_checked = bool(LAST_CHECKED.search(_prices_hub(clone).read_text(encoding="utf-8")))
+    make_page = changed or not has_last_checked
+    if not has_last_checked:
+        flags_extra.append(Check("price page", FLAG, "the site has no Last checked line in content/research/prices.md "
+                                                     "yet, so a price page is made even when no price changed"))
+    if make_page:
+        check, flags = _write_price_page(clone, day, repo, price_result, previous_day, changes, harness_url,
+                                         str(Path(additions[0][0]).parent), check_previous_page=not has_last_checked)
+        own.append(check)
+        flags_extra += flags
+    else:
+        own.append(Check("price page", PASS, f"no price change since {fmt_day(previous_day)}, no page"))
+    if has_last_checked:
+        _set_last_checked(clone, read_day, last_checked_line(read_day, previous_day, changed, day))
     repo_url = _update_manifest(clone, sha, additions)
     if changes:
         flags_extra.append(Check("price changes", FLAG, "; ".join(changes)))
+    run_speed = bool(gpu_result.summary) and _has_speed_script(clone)
+    if gpu_result.summary and not run_speed:
+        flags_extra.append(Check("speed page", FLAG, "the site has no speed script yet"))
 
-    problems = compare_page_to_sheet(page_text, price_result.sheet, price_result.previous_sheet)
-    own.append(Check("price page matches sheet", FAIL if problems else PASS,
-                     "; ".join(problems[:5]) if problems else
-                     f"{sum(len(v) for v in parse_page_tables(page_text).values())} rows compared cell for cell"))
-    own += _run_site_steps(runner, clone, data_dir, sha, day, ctx.env)
-    cover = next(c for c in own if c.name == "cover image")
+    own += _run_site_steps(runner, clone, data_dir, sha, day, ctx.env, make_page, run_speed)
+    cover = next((c for c in own if c.name == "cover image"), None)
+    speed_page = next((c for c in own if c.name == "speed page"), None)
 
     _sh(runner, ["git", "add", "-A"], cwd=clone)
     diff = _sh(runner, ["git", "diff", "--cached", "-U0", "--", ".", ":!deploy/content.golden.json", ":!*.png"],
@@ -855,13 +888,19 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
             local_note = [_update_local_main(repo, data_paths, workdir, runner)]
 
     checks = [*inputs, *own, *flags_extra]
-    summary = [*header,
-               f"Adds the {fmt_day(day)} price page and lists it on the prices index. {change_sentence(previous_day, changes)}"]
-    summary.append(f"Adds the speed summary CSV for {fmt_day(day)} and pins it in the harness manifest. "
+    hub = " The prices hub shows the new Last checked line." if has_last_checked else ""
+    if make_page:
+        summary = [*header, f"Adds the {fmt_day(day)} price page and lists it on the prices index. "
+                            f"{change_sentence(previous_day, changes)}{hub}"]
+    else:
+        summary = [*header, f"No price changed since the {fmt_day(previous_day)} read, so no price page was made.{hub}"]
+    speed_text = " Regenerates the speed page with `npm run speed`." if speed_page and speed_page.status == PASS else ""
+    summary.append(f"Adds the speed summary CSV for {fmt_day(day)} and pins it in the harness manifest.{speed_text} "
                    "The Model Watch post is not changed." if gpu_result.summary else "No GPU runs were added today.")
     summary += list(gpu_result.notes)
-    summary.append("Adds the cover image for the new price page, made with `npm run graphics`." if cover.status == PASS else
-                   f"{COVER_NOT_MADE} It needs `npm run graphics` on a machine with Chrome; the `cover image` check says why.")
+    if cover:
+        summary.append("Adds the cover image for the new price page, made with `npm run graphics`." if cover.status == PASS else
+                       f"{COVER_NOT_MADE} It needs `npm run graphics` on a machine with Chrome; the `cover image` check says why.")
     summary += local_note
 
     _sh(runner, ["git", *AUTHOR, "commit", "-m", f"{SITE_COMMIT} prices read {fmt_day(day)}"], cwd=clone)
@@ -872,7 +911,33 @@ def _build_site(day, repo, price_result, gpu_result, inputs, header, sha, commit
     return result
 
 
-def _run_site_steps(runner, clone, harness_dir, sha, day, env):
+def _write_price_page(clone, day, repo, price_result, previous_day, changes, harness_url, sheet_dir,
+                      check_previous_page):
+    """Write the day's price page, its index line and its pages.test entry. Returns (check, flags)."""
+    flags = []
+    previous_page = _latest_price_page(clone, day)
+    notes = notes_from_page(previous_page.read_text(encoding="utf-8")) if previous_page else None
+    if previous_page is None or notes is None:
+        flags.append(Check("page notes", FLAG, "No earlier price page to copy the Notes from; the default notes are used."))
+    else:
+        flags.append(Check("page notes", FLAG, f"The Notes section is copied from {previous_page.name}. Check each line still holds."))
+        # With pages only on a change, the newest page is often older than the previous sheet, so that is no news.
+        if check_previous_page and previous_page.stem.removeprefix("prices-") != previous_day.isoformat():
+            flags.append(Check("previous page", FLAG,
+                               f"The newest earlier page is {previous_page.name}, but the Change column compares with the {fmt_day(previous_day)} sheet."))
+    page_text = render_price_page(price_result.sheet, price_result.previous_sheet, _scripted_days(repo, day),
+                                  notes or DEFAULT_NOTES, sheet_dir, harness_url)
+    (clone / "content" / "research" / f"prices-{day.isoformat()}.md").write_text(page_text, encoding="utf-8")
+    _add_index_line(clone, day, index_line(day, previous_day, changes))
+    _add_to_pages_test(clone, day)
+    problems = compare_page_to_sheet(page_text, price_result.sheet, price_result.previous_sheet)
+    check = Check("price page matches sheet", FAIL if problems else PASS,
+                  "; ".join(problems[:5]) if problems else
+                  f"{sum(len(v) for v in parse_page_tables(page_text).values())} rows compared cell for cell")
+    return check, flags
+
+
+def _run_site_steps(runner, clone, harness_dir, sha, day, env, make_page, run_speed):
     def step(name, argv, detail, extra_env=None):
         return name, lambda: _step(runner, name, argv, clone, detail, extra_env)
 
@@ -883,8 +948,14 @@ def _run_site_steps(runner, clone, harness_dir, sha, day, env):
         step("site manifest sync", ["npm", "run", "sync:harness", "--", str(harness_dir), "--commit", sha, "--write"],
              "pins and file hashes written by the site's own command"),
         step("site manifest check", ["npm", "run", "harness:check"], "every file in assets/research matches the manifest"),
+    ]
+    if make_page:
         # The build checks the manifest, and the golden file and the tests read the cover, so it goes between them.
-        ("cover image", lambda: _make_cover(runner, clone, day, env)),
+        steps.append(("cover image", lambda: _make_cover(runner, clone, day, env)))
+    if run_speed:
+        steps.append(step("speed page", ["npm", "run", "speed"],
+                          "content/research/speed.md regenerated from every speed CSV with npm run speed"))
+    steps += [
         step("site golden file", ["node", "--test", "deploy/content.golden.test.mjs"],
              "golden file regenerated with UPDATE_GOLDEN=1", {"UPDATE_GOLDEN": "1"}),
         step("site tests", ["npm", "test"], "npm test passed"),

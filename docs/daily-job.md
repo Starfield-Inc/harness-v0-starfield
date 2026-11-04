@@ -10,7 +10,7 @@ The job runs these steps in order.
 2. It runs every model in `config/models.json` on one GPU with the pinned vLLM, using the fixed prompt set.
 3. It runs the checks listed below on the price sheet and on the run files.
 4. It commits the new data in a separate `git worktree` of this repository, on the temporary branch `daily-data-YYYY-MM-DD`, which starts from `origin/main`. It never commits in your checkout, never switches your branch and never changes your index.
-5. It builds the site branch (price page, cover image, prices index, harness manifest) and runs the site's own commands and checks on it.
+5. It builds the site branch (the price sheet and speed CSV, the harness manifest, the prices hub, the speed page, and on a day when a price changed the price page and its cover) and runs the site's own commands and checks on it.
 6. If no check has failed, it pushes the data commit with `git push origin daily-data-YYYY-MM-DD:main`. The push is fast-forward only. If any check has failed, it pushes nothing.
 7. It scans the lines it added to the site files for private text (see "Private text in the site files" below). If it finds any, it stops here: it pushes no site branch and opens no pull request.
 8. It pushes the site branch and opens a pull request on the site repository with the new pages and a table of the check results.
@@ -52,7 +52,7 @@ The job also writes the local report and shows the notification in these other c
 
 If the folder in `HARNESS_DAILY_LOCK_DIR` does not exist, the job makes it. If the job cannot make it, or the file system cannot lock (`flock` fails with an error), the job does not start and does not use another folder, because two runs could then lock two different files. It exits with code 1, and the local report and the notification say why.
 
-If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), the job records the FAIL check `gpu step` and still opens a draft pull request with the price page.
+If the GPU step did not run (`--skip-gpu`, or the step stopped with an error), the job records the FAIL check `gpu step` and still opens a draft pull request with the prices.
 
 The GPU step copies the run files back into a staging folder next to the launch record. It empties that folder before every copy, and rsync skips hidden files (`--exclude=.*`), so a temp file of an interrupted rsync or a `.DS_Store` cannot fail a later copy back. A link, a device, a nested folder or any other file that is not a run file still fails the copy back. The stop step writes to the launch log on the GPU machine only when that log already exists. Otherwise it prints its message and leaves no log, so a launch that failed at the ssh connection still counts as not launched and the same day is tried again.
 
@@ -74,9 +74,28 @@ Every check the publish step adds, such as `site tests` or `pull request`, also 
 
 The data commit is also safe to repeat. The job fetches `origin` and compares each of the day's files with `origin/main`. If `origin/main` already holds all of them, the job makes no commit and no push, and uses the commit that added them.
 
+### Price pages only on a change
+
+The job reads the prices every day and always commits the price sheet, the speed CSV and the manifest pin. It makes a price page (`content/research/prices-YYYY-MM-DD.md`, its graphics spec and cover, its line in the `## Price pages` list of `content/research/prices.md`, and its entry in `deploy/pages.test.mjs`) only when the new sheet differs from the previous sheet. That is, when an input or output price changed, or a row was added or removed. A carried-forward row counts as unchanged.
+
+On every read, with a change or not, the job sets `updated:` in the front matter of `content/research/prices.md` to the read date and rewrites the one line that starts with `Last checked:`. Both dates come from the read dates of the two sheets.
+
+- No change: `Last checked: 3 Nov 2026. No price changed since the 2 Nov 2026 read.`
+- A change: `Last checked: 4 Nov 2026. Prices changed since the 3 Nov 2026 read, see [the 4 Nov 2026 prices](/research/prices/2026-11-04/).`
+
+On a day with no change, the cover, the page check `price page matches sheet`, the index line and the `pages.test.mjs` entry are left out, and they are not listed as checks. The PASS check `price page` says "no price change since D Mon YYYY, no page". The pull request says "No price changed since the D Mon YYYY read, so no price page was made. The prices hub shows the new Last checked line." The title stays the same. Slack message A says "No price changed since D Mon YYYY." and links only the pull request.
+
+A site that has no `Last checked:` line in `content/research/prices.md` gets the FLAG check `price page`, and the job makes a price page every day, as before.
+
+### The speed page
+
+When the day adds a speed CSV, the job runs `npm run speed` in its clone of the site after it copies the CSVs and before it regenerates the golden file. The site's `deploy/speed-page.mjs` rewrites `content/research/speed.md` from every `assets/research/speed-*.csv`. The job commits `content/research/speed.md` with the regenerated `deploy/content.golden.json`. The golden file is regenerated once per run, after both the prices hub and the speed page are written. When the GPU step did not run, there is no new speed CSV and the job does not run `npm run speed`.
+
+If the site's `package.json` has no `speed` script, the job adds the FLAG check `speed page` with "the site has no speed script yet" and goes on. If `npm run speed` fails, the FAIL check `speed page` gives the end of its output with local paths removed, and the pull request opens as a draft.
+
 ### The cover image
 
-The site's tests need a cover for each research page. After the price page and the manifest check, the job writes the graphics spec `content/graphics/research/prices-YYYY-MM-DD.json` with `{"hero": {"variant": N}, "blocks": []}`. N is the variant of the newest earlier price page's spec plus one. After the last variant it starts again at 0, and with no earlier spec it is 0, so two price pages in a row never share a cover layout. The job reads the number of variants from the `VARIANTS` list in the site's `deploy/graphics.mjs`. It then runs `npm run build`, because the cover embeds the site's fonts, and `npm run graphics -- heroes research/prices-YYYY-MM-DD`, which renders `assets/research-covers/prices-YYYY-MM-DD/hero.png` (1280 by 720) with headless Chrome and adds the page to `assets/news/heroes.json`. Research pages have no card image. The job passes the Chrome path from `HARNESS_CHROME` to the site as `CHROME`. The check `cover image` passes and names the files. If Chrome is not there, a command fails, or no cover was written, the check fails with the reason, the job goes on, and the pull request opens as a draft. If the spec, the cover and its `heroes.json` entry are already on the site's main branch, the job makes nothing again. If only the spec is there, the job keeps its variant and renders the cover.
+The site's tests need a cover for each research page. On a day that makes a price page, after the price page and the manifest check, the job writes the graphics spec `content/graphics/research/prices-YYYY-MM-DD.json` with `{"hero": {"variant": N}, "blocks": []}`. N is the variant of the newest earlier price page's spec plus one. After the last variant it starts again at 0, and with no earlier spec it is 0, so two price pages in a row never share a cover layout. The job reads the number of variants from the `VARIANTS` list in the site's `deploy/graphics.mjs`. It then runs `npm run build`, because the cover embeds the site's fonts, and `npm run graphics -- heroes research/prices-YYYY-MM-DD`, which renders `assets/research-covers/prices-YYYY-MM-DD/hero.png` (1280 by 720) with headless Chrome and adds the page to `assets/news/heroes.json`. Research pages have no card image. The job passes the Chrome path from `HARNESS_CHROME` to the site as `CHROME`. The check `cover image` passes and names the files. If Chrome is not there, a command fails, or no cover was written, the check fails with the reason, the job goes on, and the pull request opens as a draft. If the spec, the cover and its `heroes.json` entry are already on the site's main branch, the job makes nothing again. If only the spec is there, the job keeps its variant and renders the cover.
 
 ### Private text in the site files
 
@@ -154,12 +173,15 @@ Run files, one set of checks for each model.
 
 Site branch.
 
-- `cover image`. The graphics spec and the cover of the new price page were written (see "The cover image" above). The detail names the files, or says why the cover was not made.
+- `cover image`. The graphics spec and the cover of the new price page were written (see "The cover image" above). The detail names the files, or says why the cover was not made. Only on a day that makes a price page.
+- `speed page`. `npm run speed` regenerated `content/research/speed.md` (see "The speed page" above).
 
 ### FLAG checks
 
 A FLAG does not draft the pull request. It asks a person to look before merging.
 
+- `price page`. The site has no `Last checked:` line yet, so a price page is made every day.
+- `speed page`. The site has no `speed` script yet, so the speed page was not regenerated.
 - `price changes`. A provider changed an input or output price since the previous sheet. The detail lists each change. Carried-forward rows are not compared.
 - `carried rows`. The sheet has rows a provider no longer lists, kept with an earlier price. The detail names each row and the date of its price.
 - `page dates`. A provider had a page date on the previous sheet and has `none` today. The detail names the provider and the last date seen. Carried-forward rows are not compared.

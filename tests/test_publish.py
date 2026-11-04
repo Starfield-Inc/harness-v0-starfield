@@ -15,6 +15,7 @@ from harness.publish import (build_pr_body, compare_page_to_sheet,
                              index_line, next_variant, notes_from_page, price_changes, publish, render_price_page,
                              run_command, scan_added_lines)
 from harness.price_table import COLUMNS
+from harness.slack_notify import build_run_message
 
 DAY = date(2026, 10, 30)
 PREV = date(2026, 10, 29)
@@ -52,6 +53,12 @@ def render_cover(clone, key):
     data = json.loads(manifest.read_text())
     data[key] = "fedcba9876543210"
     manifest.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def write_speed_page(clone):
+    """What `npm run speed` leaves behind: speed.md built from the speed CSVs in the clone at that moment."""
+    names = sorted(p.name for p in (clone / "assets/research").glob("speed-*.csv"))
+    (clone / "content/research/speed.md").write_text("---\ntitle: Speed\n---\n" + "".join(f"- {n}\n" for n in names))
 
 
 class Fake:
@@ -94,6 +101,8 @@ class Fake:
             return out("", 1, f"{key} broke at /Users/someone/secret/path")
         if argv[:5] == ["npm", "run", "graphics", "--", "heroes"] and self.renders:
             render_cover(Path(cwd), argv[5])
+        if argv[:3] == ["npm", "run", "speed"]:
+            write_speed_page(Path(cwd))
         return out("ok")
 
     def argvs(self):
@@ -866,6 +875,191 @@ class PublishTests(unittest.TestCase):
         self.run_publish(s)
         body = (Path(s.env["HARNESS_SITE_WORKDIR"]) / "daily-2026-10-30.pr-body.md").read_text()
         self.assertIn("- price changes: xAI grok-4.7: output $6 -> $7", body)
+
+
+HUB = ("---\nupdated: 2026-10-29\n---\nintro\n\nLast checked: 29 Oct 2026. No price changed since the 28 Oct 2026 read.\n\n"
+       "## Price pages\n\n- [Prices read on 29 Oct 2026](/x/). No price changed since the 28 Oct 2026 read.\n")
+NO_CHANGE_HUB = HUB.replace("updated: 2026-10-29", "updated: 2026-10-30").replace(
+    "Last checked: 29 Oct 2026. No price changed since the 28 Oct 2026 read.",
+    "Last checked: 30 Oct 2026. No price changed since the 29 Oct 2026 read.")
+CHANGED_LINE = ("Last checked: 30 Oct 2026. Prices changed since the 29 Oct 2026 read, "
+                "see [the 30 Oct 2026 prices](/research/prices/2026-10-30/).")
+PACKAGE = json.dumps({"scripts": {"speed": "node deploy/speed-page.mjs", "test": "node --test"}}) + "\n"
+PAGES_TEST = "const RESEARCH_FILES = ['prices.md', 'prices-2026-10-29.md'];\n"
+PAGE = "content/research/prices-2026-10-30.md"
+GOLDEN = ["node", "--test", "deploy/content.golden.test.mjs"]
+SPEED = ["npm", "run", "speed"]
+
+
+class PricePageOnChangeTests(unittest.TestCase):
+    """The site of PR #65 has a Last checked line on the prices hub, and the site of PR #66 has `npm run speed`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def setup(self, name, today=None, changed=False, hub=True, script=True):
+        root = Path(self.tmp.name) / name
+        root.mkdir()
+        s = Setup(root, changed)
+        if today is not None:
+            write_sheet(s.sheet, DAY, today)
+        seed = root / "seed"
+        if hub:
+            (seed / "content/research/prices.md").write_text(HUB)
+        if script:
+            (seed / "package.json").write_text(PACKAGE)
+        if hub or script:
+            git(seed, "add", "-A")
+            git(seed, "commit", "-q", "-m", "site with the new parts")
+            git(seed, "push", "-q", "origin", "main")
+        return s, Fake()
+
+    def publish(self, s, fake, gpu="default"):
+        return publish(DAY, s.repo, s.price, s.gpu if gpu == "default" else gpu, s.env, runner=fake)
+
+    def tree(self, s):
+        return git(s.site_remote, "ls-tree", "-r", "--name-only", BRANCH).splitlines()
+
+    def show(self, s, path):
+        return git(s.site_remote, "show", f"{BRANCH}:{path}") + "\n"
+
+    def body(self, s):
+        return (Path(s.env["HARNESS_SITE_WORKDIR"]) / f"{BRANCH}.pr-body.md").read_text()
+
+    def site_commands(self, fake):
+        return [" ".join(a[:3]) for a in fake.argvs() if a[0] in ("npm", "node")]
+
+    def test_no_change_day_makes_no_page_and_rewrites_the_last_checked_line(self):
+        s, fake = self.setup("same")
+        res = self.publish(s, fake)
+        self.assertFalse(res.draft)
+        tree = self.tree(s)
+        for made in (PAGE, "content/graphics/research/prices-2026-10-30.json",
+                     "assets/research-covers/prices-2026-10-30/hero.png"):
+            self.assertNotIn(made, tree)
+        for carried in ("assets/research/price-sheet-2026-10-30.csv", "assets/research/speed-2026-10-30.csv",
+                        "content/research/speed.md"):
+            self.assertIn(carried, tree)
+        self.assertEqual(self.show(s, "content/research/prices.md"), NO_CHANGE_HUB)
+        self.assertEqual(self.show(s, "deploy/pages.test.mjs"), PAGES_TEST)
+        manifest = json.loads(self.show(s, "deploy/harness-manifest.json"))
+        self.assertEqual(manifest["harness"]["commit"], res.harness_sha)
+        self.assertIn("assets/research/speed-2026-10-30.csv", [f["site"] for f in manifest["files"]])
+        self.assertEqual(self.site_commands(fake),
+                         ["npm ci", "npm run sync:harness", "npm run harness:check", "npm run speed",
+                          "node --test deploy/content.golden.test.mjs", "npm test", "npm run content:check",
+                          "npm run seo:check"])
+        self.assertIn(Check("price page", PASS, "no price change since 29 Oct 2026, no page"), res.checks)
+        names = [c.name for c in res.checks]
+        self.assertNotIn("price page matches sheet", names)
+        self.assertNotIn("cover image", names)
+        self.assertEqual([c for c in res.checks if c.status != PASS], [])
+        body = self.body(s)
+        self.assertIn("No price changed since the 29 Oct 2026 read, so no price page was made. "
+                      "The prices hub shows the new Last checked line.", body)
+        self.assertIn("Adds the speed summary CSV for 30 Oct 2026 and pins it in the harness manifest. "
+                      "Regenerates the speed page with `npm run speed`.", body)
+        self.assertNotIn("cover image", body)
+        create = next(a for a in fake.argvs() if a[:3] == ["gh", "pr", "create"])
+        self.assertEqual(create[create.index("--title") + 1], "Daily data: prices and V100 runs, 30 Oct 2026")
+
+    def test_speed_page_is_made_after_the_csv_is_in_the_clone_and_committed_with_the_golden_file(self):
+        s, fake = self.setup("speed")
+        self.publish(s, fake)
+        self.assertEqual(self.show(s, "content/research/speed.md"), "---\ntitle: Speed\n---\n- speed-2026-10-30.csv\n")
+        commands = fake.argvs()
+        self.assertEqual(commands.count(SPEED), 1)
+        self.assertEqual(commands.count(GOLDEN), 1)
+        self.assertLess(commands.index(SPEED), commands.index(GOLDEN))
+
+    def test_slack_run_message_on_a_no_change_day_links_no_page(self):
+        s, fake = self.setup("slack")
+        res = self.publish(s, fake)
+        text = build_run_message(DAY, res.checks, s.sheet, s.prev_sheet, None, [], res.pr_urls, res.draft)
+        self.assertIn("• No price changed since 29 Oct 2026.", text.split("\n"))
+        self.assertIn("All checks passed", text)
+        self.assertIn(f"<{PR_URL}|PR #99>", text)
+        self.assertNotIn("/research/prices/", text)
+
+    def test_each_kind_of_change_makes_the_page_and_the_changed_line(self):
+        cases = {"price changed": dict(changed=True),
+                 "model added": dict(today=MAIN + OTHER + [STEP, ("Groq", "openai/gpt-oss-120b", "0.15", "0.60")]),
+                 "model removed": dict(today=MAIN + OTHER[:1] + [STEP]),
+                 "step row removed": dict(today=MAIN + OTHER)}
+        for i, (case, kw) in enumerate(cases.items()):
+            with self.subTest(case=case):
+                s, fake = self.setup(f"change{i}", **kw)
+                res = self.publish(s, fake)
+                self.assertFalse(res.draft, [c for c in res.checks if c.status == FAIL])
+                tree = self.tree(s)
+                self.assertIn(PAGE, tree)
+                self.assertIn("content/graphics/research/prices-2026-10-30.json", tree)
+                hub = self.show(s, "content/research/prices.md")
+                self.assertIn("updated: 2026-10-30\n", hub)
+                self.assertIn("\n" + CHANGED_LINE + "\n", hub)
+                self.assertEqual(hub.count("Last checked:"), 1)
+                self.assertIn("## Price pages\n\n- [Prices read on 30 Oct 2026](/research/prices/2026-10-30/).", hub)
+                self.assertIn("'prices-2026-10-30.md']", self.show(s, "deploy/pages.test.mjs"))
+                passed = {c.name for c in res.checks if c.status == PASS}
+                self.assertLessEqual({"price page matches sheet", "cover image", "speed page"}, passed)
+                self.assertNotIn("price page", passed)
+                self.assertEqual(fake.argvs().count(GOLDEN), 1)
+                self.assertIn("Adds the 30 Oct 2026 price page and lists it on the prices index.", self.body(s))
+
+    def test_carried_forward_rows_alone_are_no_change(self):
+        s, fake = self.setup("carried", today=MAIN + OTHER[:1] + [STEP])
+        with s.sheet.open("a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([DAY.isoformat(), "Mistral", "Mistral Small 4", "0.10", "0.50", "USD per 1M tokens",
+                                    "https://example.com/pricing", "none",
+                                    "Carried forward from the 2026-10-28 read, no longer on the provider's page",
+                                    "published by Mistral, not on the page on 2026-10-30"])
+        res = self.publish(s, fake)
+        self.assertNotIn(PAGE, self.tree(s))
+        self.assertEqual(self.show(s, "content/research/prices.md"), NO_CHANGE_HUB)
+        self.assertIn(Check("price page", PASS, "no price change since 29 Oct 2026, no page"), res.checks)
+
+    def test_no_speed_page_when_the_gpu_part_did_not_run(self):
+        s, fake = self.setup("nogpu")
+        res = self.publish(s, fake, gpu=None)
+        self.assertNotIn(SPEED, fake.argvs())
+        self.assertNotIn("speed page", [c.name for c in res.checks])
+        self.assertEqual(fake.argvs().count(GOLDEN), 1)
+        self.assertEqual(self.show(s, "content/research/prices.md"), NO_CHANGE_HUB)
+        self.assertIn("No GPU runs were added today.", self.body(s))
+
+    def test_failing_speed_script_fails_with_the_tail_and_no_local_path(self):
+        s, fake = self.setup("speedfail")
+        fake.fail_on = {"npm run speed"}
+        res = self.publish(s, fake)
+        self.assertTrue(res.draft)
+        failed = next(c for c in res.checks if c.name == "speed page")
+        self.assertEqual(failed.status, FAIL)
+        self.assertEqual(failed.detail, "`npm run speed` failed: npm run speed broke at <path>")
+        self.assertIn("| speed page | FAIL |", self.body(s))
+        self.assertNotIn("/Users/someone", self.body(s))
+        self.assertNotIn("Regenerates the speed page", self.body(s))
+
+    def test_site_without_the_line_or_the_script_keeps_the_old_behaviour_for_that_part(self):
+        old_line = Check("price page", FLAG, "the site has no Last checked line in content/research/prices.md yet, "
+                                             "so a price page is made even when no price changed")
+        no_script = Check("speed page", FLAG, "the site has no speed script yet")
+        cases = {"neither": (False, False), "line only": (True, False), "script only": (False, True)}
+        for case, (hub, script) in cases.items():
+            with self.subTest(case=case):
+                s, fake = self.setup(case.replace(" ", "-"), hub=hub, script=script)
+                res = self.publish(s, fake)
+                self.assertFalse(res.draft, [c for c in res.checks if c.status == FAIL])
+                self.assertEqual(PAGE in self.tree(s), not hub)
+                self.assertEqual(old_line in res.checks, not hub)
+                self.assertEqual(no_script in res.checks, not script)
+                self.assertEqual(SPEED in fake.argvs(), script)
+                self.assertEqual(fake.argvs().count(GOLDEN), 1)
+                if not hub:
+                    self.assertNotIn("Last checked", self.show(s, "content/research/prices.md"))
+                    self.assertIn("- price page: the site has no Last checked line", self.body(s))
+                if not script:
+                    self.assertIn("- speed page: the site has no speed script yet", self.body(s))
 
 
 BRANCH = "daily-2026-10-30"
