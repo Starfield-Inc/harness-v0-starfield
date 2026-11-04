@@ -70,17 +70,21 @@ class HuggingFaceTest(unittest.TestCase):
         self.assertEqual(parse("google/x", "any-to-any").kind, Kind.ANY_TO_ANY)
         self.assertEqual(parse("google/x", None).kind, Kind.OTHER)
         self.assertEqual(parse("nvidia/Qwen3-8B-NVFP4", "text-generation").derivation, Derivation.QUANTIZED)
+        self.assertEqual(parse("nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16", "image-text-to-text").derivation,
+                         Derivation.ORIGINAL)
+        self.assertEqual(parse("nvidia/Nemotron-3.5-Embed-8B-FP16", "feature-extraction").derivation,
+                         Derivation.ORIGINAL)
         adapter = parse("google/x-lora", "text-generation", ["base_model:adapter:google/gemma-4"])
         self.assertEqual((adapter.derivation, adapter.base_model), (Derivation.ADAPTER, "google/gemma-4"))
         self.assertIsNone(sources.parse_release({"id": "no-slash", "createdAt": "2026-11-03T10:00:00Z"}, "x"))
 
-    def test_hf_new_keeps_repos_since_and_flags_a_cut_list(self):
+    def test_hf_new_keeps_older_repos_and_flags_a_cut_list(self):
         org = config.parse({"orgs": [{"name": "Qwen", "hf_author": "Qwen"}]}).orgs[0]
         rows = [{"id": f"Qwen/m{i}", "createdAt": f"2026-11-0{i}T00:00:00Z"} for i in (4, 3, 2)]
         fetch = {sources.hf_new_url("Qwen", 3): (200, json.dumps(rows))}.get
         since = datetime(2026, 11, 3, tzinfo=timezone.utc)
         got, cut = sources.hf_new(fetch, org, since, 3)
-        self.assertEqual(([r.id for r in got], cut), (["Qwen/m4", "Qwen/m3"], False))
+        self.assertEqual(([r.id for r in got], cut), (["Qwen/m4", "Qwen/m3", "Qwen/m2"], False))
         got, cut = sources.hf_new(fetch, org, datetime(2026, 11, 1, tzinfo=timezone.utc), 3)
         self.assertEqual((len(got), cut), (3, True))
 
@@ -139,10 +143,9 @@ class ConfigTest(unittest.TestCase):
     def test_committed_config_loads_and_every_org_has_an_hf_author(self):
         cfg = config.load()
         self.assertTrue(all(o.hf_author for o in cfg.orgs))
-        self.assertEqual({o.hf_author for o in cfg.orgs if not o.verified},
-                         {"LiquidAI", "tencent", "MiniMaxAI", "CohereLabs", "ByteDance-Seed", "XiaomiMiMo"})
-        self.assertEqual(len(cfg.orgs), 18)
-        self.assertEqual(cfg.settings.cap, 3)
+        self.assertEqual({o.hf_author for o in cfg.orgs if not o.verified}, set())
+        self.assertEqual(len(cfg.orgs), 28)
+        self.assertEqual((cfg.settings.cap, cfg.settings.max_repo_age_days), (3, 180))
 
     def test_bad_config_is_refused(self):
         for raw in ({"orgs": []}, {"orgs": [{"name": "x"}]}, {"orgs": [{"name": "x", "hf_author": "x"}],

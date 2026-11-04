@@ -120,6 +120,16 @@ class LiveRunTest(Case):
         self.assertNotIn("moonshotai/Kimi-K3", self.section(out, "Candidates").split("Already suggested")[0])
         self.assertIn("Already suggested on an earlier day: moonshotai/kimi-k-3", out)
 
+    def test_repo_made_public_long_after_it_was_created_is_read_and_suggested(self):
+        answers = default_answers()
+        answers[sources.hf_new_url("Qwen", 30)] = (200, hf_rows(("Qwen/Qwen3.5-397B-A17B", "2026-11-03"),
+                                                                ("Qwen/QwQ-3-32B", "2026-10-05")))
+        answers[sources.OPENROUTER_API] = (200, json.dumps({"data": [
+            {"id": "qwen/qwen3.5-397b-a17b", "created": ts("2026-11-03"), "name": "Qwen3.5"},
+            {"id": "qwen/qwq-3-32b", "created": ts("2026-11-03"), "name": "QwQ 3"}]}))
+        _, out, _ = self.run_radar("--dry-run", world=World(answers))
+        self.assertIn("Qwen/QwQ-3-32B", self.section(out, "Candidates"))
+
     def test_dry_run_writes_nothing(self):
         code, out, _ = self.run_radar("--dry-run")
         self.assertEqual(code, 0)

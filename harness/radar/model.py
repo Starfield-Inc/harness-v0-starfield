@@ -42,6 +42,7 @@ class Org:
 class Settings:
     cap: int = 3
     candidate_days: int = 7
+    max_repo_age_days: int = 180
     signal_days_before: int = 7
     watch_days: int = 2
     hf_limit: int = 30
@@ -163,6 +164,7 @@ class Evidence:
     openrouter_id: str | None
     lab_calls_update: bool
     notes: tuple[str, ...]
+    first_signal: date | None
 
 
 class Outcome(Enum):

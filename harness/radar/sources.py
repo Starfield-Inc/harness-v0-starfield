@@ -142,14 +142,14 @@ def hf_new_url(author: str, limit: int) -> str:
 
 
 def hf_new(fetch, org, since: datetime, limit: int) -> tuple[list[Release], bool]:
-    """The org's repos created at or after since, and whether the list may be cut (the API returned limit
-    rows and the oldest is still newer than since)."""
+    """The org's newest repos, and whether the list may be cut (the API returned limit rows and the oldest
+    is still newer than since). Older repos are kept, because one made public late can still be recent."""
     data = _json(fetch, hf_new_url(org.hf_author, limit))
     if not isinstance(data, list):
         raise SourceError("expected a list")
     releases = [r for raw in data if isinstance(raw, dict) and (r := parse_release(raw, org.name))]
     cut = len(data) >= limit and bool(releases) and min(r.created_at for r in releases) > since
-    return [r for r in releases if r.created_at >= since], cut
+    return releases, cut
 
 
 def hf_trending(fetch) -> frozenset[str]:
@@ -353,7 +353,7 @@ class _Collector:
 
 def collect(config: Config, fetch, day: date, history_days: int, history: bool) -> Snapshot:
     """Read every source once. history=True is the backtest: no trending (it has no past), a longer
-    Hugging Face list, and repos back to history_days before day."""
+    Hugging Face list, and a note for each org whose list does not reach back history_days before day."""
     s = config.settings
     since = datetime.combine(day - timedelta(days=history_days), datetime.min.time(), timezone.utc)
     limit = s.backtest_hf_limit if history else s.hf_limit

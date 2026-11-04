@@ -13,24 +13,29 @@ def _in_window(when: date | None, start: date, end: date, undated_ok: bool) -> b
     return undated_ok if when is None else start <= when <= end
 
 
-def _router_match(release: Release, org: Org, router, start, end) -> RouterModel | None:
+def _router_matches(release: Release, org: Org, router, start, end, siblings) -> list[RouterModel]:
+    """Newest first."""
+    out = []
     for m in sorted(router, key=lambda m: m.created, reverse=True):
         if not start <= m.created.date() <= end:
             continue
-        if m.hugging_face_id and m.hugging_face_id.lower() == release.id.lower():
-            return m
         prefix, _, rest = m.id.partition("/")
-        if prefix.lower() in org.openrouter_prefixes and names.mentions(rest, release.id):
-            return m
-    return None
+        if (m.hugging_face_id and m.hugging_face_id.lower() == release.id.lower()) or (
+                prefix.lower() in org.openrouter_prefixes and names.mentions(rest, release.id, siblings)):
+            out.append(m)
+    return out
 
 
 def evidence(release: Release, org: Org, snap: Snapshot, day: date, settings: Settings, history: bool) -> Evidence:
     """Signals visible on day. A lab headline that calls itself an update marks a minor update and is not
-    counted as a lab post. In the backtest an undated headline is skipped, because its day is unknown."""
+    counted as a lab post. In the backtest an undated headline is skipped, because its day is unknown.
+    first_signal is the earliest date of a listing, lab post or press item behind a signal."""
     start, end = release.created_at.date() - timedelta(days=settings.signal_days_before), day
     signals, notes = set(), []
-    match = _router_match(release, org, snap.router, start, end)
+    siblings = [r.id for r in snap.releases if r.org == release.org and r.id != release.id
+                and r.created_at.date() <= day]
+    matches = _router_matches(release, org, snap.router, start, end, siblings)
+    match = matches[0] if matches else None
     if match:
         signals.add(Signal.ON_OPENROUTER)
     if snap.trending is not None and release.id.lower() in snap.trending:
@@ -38,7 +43,7 @@ def evidence(release: Release, org: Org, snap: Snapshot, day: date, settings: Se
 
     def hits(items: tuple[Item, ...]) -> list[Item]:
         return [i for i in items if _in_window(i.published, start, end, not history)
-                and names.mentions(i.title, release.id)]
+                and names.mentions(i.title, release.id, siblings)]
 
     lab = hits(snap.lab_items.get(org.name, ()))
     posts = [i for i in lab if not UPDATE_WORD.search(i.title)]
@@ -55,9 +60,11 @@ def evidence(release: Release, org: Org, snap: Snapshot, day: date, settings: Se
         notes.append("on the Hugging Face trending list")
     if Signal.PRESS_2PLUS in signals:
         notes.append(f"covered by {len(outlets)} outlets")
+    backed = posts + (press if Signal.PRESS_2PLUS in signals else [])
+    dated = [m.created.date() for m in matches] + [i.published for i in backed if i.published]
     return Evidence(frozenset(signals), tuple(dict.fromkeys(i.link for i in posts if i.link)),
                     tuple(dict.fromkeys(i.link for i in press if i.link)), match.id if match else None,
-                    any(UPDATE_WORD.search(i.title) for i in lab), tuple(notes))
+                    any(UPDATE_WORD.search(i.title) for i in lab), tuple(notes), min(dated, default=None))
 
 
 def judge(release: Release, ev: Evidence, official: bool) -> Verdict:
@@ -130,18 +137,28 @@ def _watch(config: Config, snap: Snapshot, releases: list[Release], day: date) -
 
 def radar_day(config: Config, snap: Snapshot, day: date, seen: dict[str, str], rejected: set[str],
               covered_items=(), history: bool = False) -> DayReport:
-    """seen maps a family key to the day it was first suggested. A key first suggested before day is left
-    out (already suggested). A key suggested on day itself stays, so a rerun gives the same report."""
+    """A release is recent when it was created in the last candidate_days, or when it was created in the last
+    max_repo_age_days and its first signal is in the last candidate_days (a repo made public long after it
+    was created). seen maps a family key to the day it was first suggested. A key first suggested before day
+    is left out (already suggested). A key suggested on day itself stays, so a rerun gives the same report."""
     s = config.settings
+    new_since, old_since = day - timedelta(days=s.candidate_days), day - timedelta(days=s.max_repo_age_days)
     visible = [r for r in snap.releases if r.created_at.date() <= day]
-    recent = [r for r in visible if r.created_at.date() >= day - timedelta(days=s.candidate_days)]
-    passed, other, rejected_verdicts = [], [], []
-    for r in recent:
+    recent, passed, other, rejected_verdicts = [], [], [], []
+    for r in visible:
+        created = r.created_at.date()
         org = config.org_for_author(r.id.split("/", 1)[0])
         if org is None:
-            rejected_verdicts.append(Verdict(r, Outcome.REJECTED, ("not from an official organization",)))
+            if created >= new_since:
+                recent.append(r)
+                rejected_verdicts.append(Verdict(r, Outcome.REJECTED, ("not from an official organization",)))
+            continue
+        if created < min(new_since, old_since):
             continue
         ev = evidence(r, org, snap, day, s, history)
+        if created < new_since and not (ev.first_signal and ev.first_signal >= new_since):
+            continue
+        recent.append(r)
         verdict = judge(r, ev, official=True)
         if verdict.outcome is Outcome.REJECTED:
             rejected_verdicts.append(verdict)

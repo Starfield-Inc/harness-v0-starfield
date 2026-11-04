@@ -2,6 +2,7 @@
   "settings": {
     "cap": 3,
     "candidate_days": 7,
+    "max_repo_age_days": 180,
     "signal_days_before": 7,
     "watch_days": 2,
     "hf_limit": 30,
@@ -41,12 +42,21 @@
      "feeds": [{"url": "https://openai.com/news/rss.xml", "kind": "rss"}]},
     {"name": "Z.ai", "hf_author": "zai-org", "openrouter_prefixes": ["z-ai"],
      "pages": [{"url": "https://docs.z.ai/release-notes/new-released", "parser": "zai_release_notes"}]},
-    {"name": "Liquid AI", "hf_author": "LiquidAI", "openrouter_prefixes": ["liquid"], "verified": false},
-    {"name": "Tencent", "hf_author": "tencent", "openrouter_prefixes": ["tencent"], "verified": false},
-    {"name": "MiniMax", "hf_author": "MiniMaxAI", "openrouter_prefixes": ["minimax"], "verified": false},
-    {"name": "Cohere Labs", "hf_author": "CohereLabs", "openrouter_prefixes": ["cohere"], "verified": false},
-    {"name": "ByteDance Seed", "hf_author": "ByteDance-Seed", "openrouter_prefixes": ["bytedance-seed", "bytedance"],
-     "verified": false},
-    {"name": "Xiaomi MiMo", "hf_author": "XiaomiMiMo", "openrouter_prefixes": ["xiaomi"], "verified": false}
+    {"name": "Liquid AI", "hf_author": "LiquidAI", "openrouter_prefixes": ["liquid"]},
+    {"name": "Tencent", "hf_author": "tencent", "openrouter_prefixes": ["tencent"]},
+    {"name": "MiniMax", "hf_author": "MiniMaxAI", "openrouter_prefixes": ["minimax"]},
+    {"name": "Cohere Labs", "hf_author": "CohereLabs", "openrouter_prefixes": ["cohere"]},
+    {"name": "ByteDance Seed", "hf_author": "ByteDance-Seed", "openrouter_prefixes": ["bytedance-seed", "bytedance"]},
+    {"name": "Xiaomi MiMo", "hf_author": "XiaomiMiMo", "openrouter_prefixes": ["xiaomi"]},
+    {"name": "Meta Muse", "hf_author": "meta-models", "openrouter_prefixes": ["meta"]},
+    {"name": "StepFun", "hf_author": "stepfun-ai", "openrouter_prefixes": ["stepfun"]},
+    {"name": "inclusionAI", "hf_author": "inclusionAI", "openrouter_prefixes": ["inclusionai"]},
+    {"name": "Baidu", "hf_author": "baidu", "openrouter_prefixes": ["baidu"]},
+    {"name": "xAI", "hf_author": "xai-org", "openrouter_prefixes": ["x-ai"]},
+    {"name": "Amazon", "hf_author": "amazon", "openrouter_prefixes": ["amazon"]},
+    {"name": "Apple", "hf_author": "apple", "openrouter_prefixes": ["apple"]},
+    {"name": "ServiceNow", "hf_author": "ServiceNow-AI", "openrouter_prefixes": ["servicenow"]},
+    {"name": "OpenBMB", "hf_author": "openbmb", "openrouter_prefixes": ["openbmb"]},
+    {"name": "InternLM", "hf_author": "internlm", "openrouter_prefixes": ["internlm"]}
   ]
 }

@@ -17,18 +17,20 @@ Each request uses the User-Agent `starfield-radar` and a 20 second timeout. A so
 
 ## The rule
 
-A Hugging Face repo is a candidate only when all of these hold:
+A Hugging Face repo is looked at on a day when it is recent. It is recent when it was created in the last `candidate_days`. A repo made public long after it was created is also recent when it was created in the last `max_repo_age_days` and its first signal (an OpenRouter listing, a lab post, or the press items behind the two or more outlets signal) is in the last `candidate_days`. Hugging Face dates a repo by its creation, which can be weeks before the public release.
+
+A recent repo is a candidate only when all of these hold:
 
 1. Its author is an org in `config/radar.json`.
 2. The repo is public and lists weight files (a tag such as `safetensors` or `gguf`).
-3. It is not a derivative. A `base_model:` tag of type `quantized`, `adapter` or `merge` makes it one. So does `finetune`, except for a fine-tune of the org's own base model of the same family (an instruct model of its base). A name marker (NVFP4, FP8, FP4, GGUF, ONNX, AWQ, GPTQ, MLX, INT4, INT8, BF16) also makes it a quantized copy.
+3. It is not a derivative. A `base_model:` tag of type `quantized`, `adapter` or `merge` makes it one. So does `finetune`, except for a fine-tune of the org's own base model of the same family (an instruct model of its base). A name marker (NVFP4, FP8, FP4, GGUF, ONNX, AWQ, GPTQ, MLX, INT4, INT8) also makes it a quantized copy. BF16 and FP16 are not copy markers, because labs such as NVIDIA put BF16 in the names of their original releases.
 4. It has at least one signal: on OpenRouter, on Hugging Face trending, a lab post, or two or more press outlets. A lab post or press item counts from 7 days before the repo was created up to the day of the run.
 5. A minor dated update needs a lab post. A name ending in `-MMDD` or `-YYMM` (such as `-0905` or `-2507`) is a minor update. So is a release whose lab headline calls it an update, and that headline does not count as a lab post.
 6. Its kind is text, vision or any-to-any. An image, audio, embedding, safety or other model that passes the rest and has a lab post is listed under "Other releases".
 
 Variants of one model family become one candidate. The other variants are listed as "same family" and quantized copies as "quantized copy". Candidates are ranked by the number of signals, then newest first. The first three are the candidates for the day. The rest are listed as over the cap.
 
-Name matching between a repo and an OpenRouter id or a headline is described in the `harness/radar/names.py` docstring, with its limits.
+Name matching between a repo and an OpenRouter id or a headline is described in the `harness/radar/names.py` docstring, with its limits. When several repos of one org share a name and version (Nemotron 3.5 Super VL and Nemotron 3.5 Parse), a text that spells out the full name of one of them counts only for that one.
 
 OpenRouter models from an official org that have no Hugging Face repo go to "Watch (API only)". They are never candidates.
 
@@ -54,7 +56,8 @@ A family key is the author and the name words without sizes, markers, dates and 
 | `official_feeds` | feeds that count as a lab post for every org |
 | `press_feeds` | feeds for the two or more outlets signal |
 | `settings.cap` | candidates per day (3) |
-| `settings.candidate_days` | how many days a new repo can still become a candidate (7) |
+| `settings.candidate_days` | how many days a new repo, or a repo with a new first signal, can still become a candidate (7) |
+| `settings.max_repo_age_days` | how old a repo can be and still become a candidate through a new first signal (180) |
 | `settings.signal_days_before` | how many days before a repo's creation a post still counts (7) |
 | `settings.watch_days` | how many days an API-only model stays on the watch list (2) |
 | `settings.hf_limit`, `settings.backtest_hf_limit` | repos read per org, live (30) and in the backtest (100) |
@@ -121,7 +124,7 @@ Exit code 0 when at least one source answered, 1 when every source failed or on 
 
 ## How to read the backtest
 
-The backtest reads every source once, then replays each day of the last N days with only the signals dated on or before that day. It remembers what it suggested in memory, so a candidate counts on the first day it passes and not again. It writes no file.
+The backtest reads every source once, then replays each day of the last N days with only the signals dated on or before that day. A first signal after the replayed day does not make a repo recent on that day. It remembers what it suggested in memory, so a candidate counts on the first day it passes and not again. It writes no file.
 
 Each day prints a count and the candidates with their signals and the reason they passed. The summary gives the days with 0 candidates, the mean per day, the most in one day, and the rejected repos counted by their first failed check.
 

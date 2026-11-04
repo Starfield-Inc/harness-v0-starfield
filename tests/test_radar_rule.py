@@ -12,9 +12,11 @@ CONFIG = config.parse({
         {"name": "Moonshot AI", "hf_author": "moonshotai", "openrouter_prefixes": ["moonshotai"]},
         {"name": "DeepSeek", "hf_author": "deepseek-ai", "openrouter_prefixes": ["deepseek"]},
         {"name": "NVIDIA", "hf_author": "nvidia", "openrouter_prefixes": ["nvidia"]},
+        {"name": "Meta Muse", "hf_author": "meta-models", "openrouter_prefixes": ["meta"]},
     ],
 })
-ORG_OF = {"Qwen": "Qwen", "moonshotai": "Moonshot AI", "deepseek-ai": "DeepSeek", "nvidia": "NVIDIA"}
+ORG_OF = {"Qwen": "Qwen", "moonshotai": "Moonshot AI", "deepseek-ai": "DeepSeek", "nvidia": "NVIDIA",
+          "meta-models": "Meta Muse"}
 
 
 def release(repo, created="2026-11-03T10:00:00.000Z", tags=("safetensors",), pipeline="text-generation", **raw):
@@ -186,7 +188,95 @@ class RuleTest(unittest.TestCase):
         self.assertIn("qwen/qwen3.5-9b", verdict.reasons[0])
 
 
+class LatePublicTest(unittest.TestCase):
+    MUSE = "meta-models/Muse-Spark-Open-816B-A42B"
+
+    def muse(self, created="2026-10-05T10:00:00Z"):
+        return release(self.MUSE, created=created, lastModified="2026-11-03T10:00:00Z")
+
+    def test_repo_created_a_month_ago_and_listed_yesterday_is_a_candidate(self):
+        report = run(snapshot([self.muse()], [router("meta/muse-spark-open", day="2026-11-03")]))
+        self.assertEqual(ids(report.candidates), [self.MUSE])
+
+    def test_listing_outside_the_candidate_days_does_not_count(self):
+        for listed in ("2026-09-25", "2026-10-20"):
+            report = run(snapshot([self.muse()], [router("meta/muse-spark-open", day=listed)]))
+            self.assertEqual((ids(report.candidates), report.rejected), ([], ()), listed)
+
+    def test_old_repo_with_a_late_post_needs_to_be_younger_than_max_repo_age_days(self):
+        lab = {"Meta Muse": (post("Muse Spark Open is here", day="2026-11-04"),)}
+        old = run(snapshot([self.muse(created="2026-04-18T10:00:00Z")], lab=lab))
+        self.assertEqual((ids(old.candidates), old.rejected), ([], ()))
+        younger = run(snapshot([self.muse(created="2026-07-27T10:00:00Z")], lab=lab))
+        self.assertEqual(ids(younger.candidates), [self.MUSE])
+
+    def test_replay_does_not_see_the_listing_before_its_day(self):
+        snap = snapshot([self.muse()], [router("meta/muse-spark-open", day="2026-11-03")])
+        self.assertEqual(ids(run(snap, day=date(2026, 11, 2), history=True).candidates), [])
+        self.assertEqual(ids(run(snap, day=date(2026, 11, 3), history=True).candidates), [self.MUSE])
+
+
+class NemotronReplayTest(unittest.TestCase):
+    """15 Oct 2026, with names and tags from the real Hugging Face repos."""
+    DAY = date(2026, 10, 15)
+    SUPER_VL = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
+
+    def snap(self, title="NVIDIA Nemotron 3.5 Super VL Powers Specialized Agents with Multimodal Reasoning"):
+        releases = [
+            release(self.SUPER_VL, created="2026-10-12T10:00:00Z", pipeline="image-text-to-text"),
+            release("nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16", created="2026-10-12T08:00:00Z",
+                    pipeline="image-text-to-text"),
+            release("nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4", created="2026-10-12T11:00:00Z",
+                    pipeline="image-text-to-text", tags=("safetensors", f"base_model:quantized:{self.SUPER_VL}")),
+            release("nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16", created="2026-10-12T12:00:00Z",
+                    tags=("safetensors", f"base_model:finetune:{self.SUPER_VL}")),
+            release("nvidia/Nemotron-3.5-Parse", created="2026-09-03T10:00:00Z", pipeline="image-text-to-text"),
+            release("nvidia/Nemotron-3.5-Transcribe-30B-A4B", created="2026-10-10T10:00:00Z",
+                    pipeline="automatic-speech-recognition"),
+            release("nvidia/Nemotron-3.5-Embed-8B-BF16", created="2026-10-10T10:00:00Z", pipeline="feature-extraction"),
+        ]
+        return snapshot(releases, [router("nvidia/nemotron-3.5-super-vl", day="2026-10-15")],
+                        lab={"NVIDIA": (post(title, day="2026-10-15"),)})
+
+    def test_the_super_vl_original_is_the_one_nvidia_candidate(self):
+        report = run(self.snap(), day=self.DAY, history=True)
+        self.assertEqual(ids(report.candidates), [self.SUPER_VL])
+        self.assertEqual(report.candidates[0].signals, frozenset({Signal.ON_OPENROUTER, Signal.LAB_POST}))
+        self.assertEqual(report.candidates[0].copy_links,
+                         ("https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",))
+        self.assertEqual((ids(report.over_cap), ids(report.other)), ([], []))
+
+    def test_parse_has_no_signal_from_the_super_vl_listing_and_post(self):
+        report = run(self.snap(), day=self.DAY, history=True)
+        listed = ids(report.candidates + report.over_cap + report.other) + [v.release.id for v in report.rejected]
+        self.assertNotIn("nvidia/Nemotron-3.5-Parse", listed)
+        bolt = next(v for v in report.rejected if "Bolt" in v.release.id)
+        self.assertEqual(bolt.reasons, (f"fine-tune of {self.SUPER_VL}", "no signal"))
+
+    def test_a_post_that_names_only_the_version_counts_for_every_sibling(self):
+        report = run(self.snap(title="NVIDIA Nemotron 3.5 family is here"), day=self.DAY, history=True)
+        self.assertIn("nvidia/Nemotron-3.5-Transcribe-30B-A4B", ids(report.other))
+
+
 class NamesTest(unittest.TestCase):
+    def test_full_name_of_a_sibling_wins_over_the_shared_stem(self):
+        siblings = ["nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16", "nvidia/Nemotron-3.5-Parse",
+                    "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16"]
+        for text in ("nemotron-3.5-super-vl", "NVIDIA Nemotron 3.5 Super VL Powers Specialized Agents"):
+            got = [s for s in siblings if names.mentions(text, s, [o for o in siblings if o != s])]
+            self.assertEqual(got, siblings[:1], text)
+
+    def test_stem_still_counts_for_all_siblings_when_none_is_named_in_full(self):
+        family = ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"]
+        for repo in family:
+            self.assertTrue(names.mentions("Llama 4 launches", repo, family))
+
+    def test_dated_update_matches_with_and_without_its_date(self):
+        family = ["moonshotai/Kimi-K2-Instruct", "moonshotai/Kimi-K2-Instruct-0905"]
+        for repo in family:
+            self.assertTrue(names.mentions("kimi-k2", repo, family))
+            self.assertTrue(names.mentions("Kimi K2 0905 update", repo, family))
+
     def test_positive_matches(self):
         cases = [("Introducing Qwen3.5: native agents", "Qwen/Qwen3.5-397B-A17B"),
                  ("qwen3.5-plus", "Qwen/Qwen3.5-397B-A17B"),
