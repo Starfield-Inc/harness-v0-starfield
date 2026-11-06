@@ -20,6 +20,7 @@ class PostCase(Case):
     def setUp(self):
         super().setUp()
         self.posts = []
+        self.payloads = []
         self.fail_post = False
         patcher = mock.patch.object(slack_notify, "post", self.record)
         patcher.start()
@@ -29,6 +30,7 @@ class PostCase(Case):
         if self.fail_post:
             raise OSError(f"cannot reach {url}")
         self.posts.append((url, payload["text"]))
+        self.payloads.append(payload)
         return 200
 
     def run_with_hooks(self, *args, extra=None, world=None):
@@ -51,10 +53,11 @@ class MessageTest(PostCase):
         self.assertIn("Why it passed: ", qwen)
         self.assertIn("Hugging Face: https://huggingface.co/Qwen/Qwen3.5-397B-A17B", qwen)
         self.assertIn("Official post: https://lab.test/0", qwen)
-        self.assertTrue(qwen.endswith("To write this one up, tell the harness session: go for qwen/qwen-3-5"))
         kimi = text.split("*moonshotai/Kimi-K3*")[1].split("\n\n")[0]
         self.assertIn("Press: https://lab.test/0", kimi)
-        self.assertTrue(kimi.endswith("go for moonshotai/kimi-k-3"))
+        self.assertNotIn("go for", text)
+        self.assertTrue(text.endswith("Write this up drafts the page with Claude and opens a draft PR with the claims "
+                                      "table. Only the news reviewer can use it."))
 
     def test_watch_line_rides_along_with_a_candidate(self):
         self.run_with_hooks()
@@ -76,7 +79,7 @@ class MessageTest(PostCase):
     def test_mention_markup_in_a_reason_is_escaped(self):
         rel = release("Qwen/Qwen3.5-397B-A17B")
         c = Candidate("qwen/qwen-3-5", rel, frozenset({Signal.LAB_POST}), ("lab post: <!here> hello",), (), (), None)
-        text = build_message(DayReport(date(2026, 11, 4), (c,), (), (), (), (), ()), False)
+        text = build_message(DayReport(date(2026, 11, 4), (c,), (), (), (), (), ()), False).text
         self.assertNotIn("<!here>", text)
         self.assertIn("&lt;!here&gt;", text)
 
@@ -93,6 +96,52 @@ class MessageTest(PostCase):
                                   "</item></channel></rss>")
         self.run_with_hooks(world=World(answers), extra={"HARNESS_PRIVATE_TERMS": "secrethost1"})
         self.assertNotIn("secrethost1", self.posts[0][1])
+
+
+def write_up_buttons(payload) -> list[tuple[str, str]]:
+    return [(b["accessory"]["action_id"], b["accessory"]["value"]) for b in payload.get("blocks", [])
+            if "accessory" in b]
+
+
+class ButtonTest(PostCase):
+    def posted(self):
+        path = self.radar / "posted.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def test_each_posted_candidate_has_one_write_up_button_with_its_key(self):
+        self.run_with_hooks()
+        payload = self.payloads[0]
+        self.assertEqual(sorted(write_up_buttons(payload)), [("write_up", k) for k in sorted(KEYS)])
+        qwen = next(b for b in payload["blocks"] if b.get("accessory", {}).get("value") == "qwen/qwen-3-5")
+        self.assertIn("*Qwen/Qwen3.5-397B-A17B*", qwen["text"]["text"])
+        self.assertIn("Hugging Face: https://huggingface.co/Qwen/Qwen3.5-397B-A17B", qwen["text"]["text"])
+
+    def test_a_candidate_seen_before_gets_no_button_and_no_facts(self):
+        self.radar.mkdir()
+        (self.radar / "seen.json").write_text(json.dumps({"moonshotai/kimi-k-3": "2026-11-03"}))
+        self.run_with_hooks()
+        self.assertEqual(write_up_buttons(self.payloads[0]), [("write_up", "qwen/qwen-3-5")])
+        self.assertNotIn("Kimi", self.posts[0][1])
+        self.assertEqual(set(self.posted()), {"qwen/qwen-3-5"})
+
+    def test_posted_facts_are_what_the_message_shows(self):
+        self.run_with_hooks()
+        qwen = self.posted()["qwen/qwen-3-5"]
+        self.assertEqual(qwen["id"], "Qwen/Qwen3.5-397B-A17B")
+        self.assertEqual(qwen["hugging_face"], "https://huggingface.co/Qwen/Qwen3.5-397B-A17B")
+        self.assertEqual(qwen["license"], "apache-2.0")
+        self.assertEqual(qwen["released"], "2026-11-03")
+        self.assertEqual(qwen["official_links"], ["https://lab.test/0"])
+        for link in qwen["official_links"] + qwen["press_links"]:
+            self.assertIn(link, self.posts[0][1])
+
+    def test_no_webhook_writes_no_facts(self):
+        self.run_radar()
+        self.assertIsNone(self.posted())
+
+    def test_every_source_failing_has_no_button(self):
+        self.run_with_hooks(world=World({}))
+        self.assertNotIn("blocks", self.payloads[0])
 
 
 class TargetTest(PostCase):

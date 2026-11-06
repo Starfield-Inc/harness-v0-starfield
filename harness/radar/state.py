@@ -1,7 +1,8 @@
 """seen.json and rejected.json in the radar folder.
 
 seen.json maps a family key to the first day it was suggested. rejected.json holds keys never to suggest
-again, as a list or as an object whose keys count. The radar only reads rejected.json.
+again, as a list or as an object whose keys count. The radar only reads rejected.json. posted.json maps a key
+to the facts of the candidate as the Slack message showed them, which the Write this up button drafts from.
 """
 import json
 import os
@@ -64,6 +65,24 @@ def add_rejected(folder: Path, key: str) -> bool:
     data = sorted([*raw, key]) if isinstance(raw, list) else {**raw, key: date.today().isoformat()}
     write_json(folder / "rejected.json", data)
     return True
+
+
+def write_posted(folder: Path, facts: dict[str, dict]) -> None:
+    """Add facts (key to the facts post.candidate_facts gives) to posted.json. A key posted again gets the
+    newer facts."""
+    raw = _read(folder / "posted.json") or {}
+    if not isinstance(raw, dict):
+        raise StateError("posted.json must be an object")
+    write_json(folder / "posted.json", {**raw, **facts})
+
+
+def read_posted(folder: Path) -> dict[str, dict]:
+    raw = _read(folder / "posted.json")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not all(isinstance(v, dict) for v in raw.values()):
+        raise StateError("posted.json must map keys to objects")
+    return raw
 
 
 def mark_seen(seen: dict[str, str], keys, day: date) -> dict[str, str]:

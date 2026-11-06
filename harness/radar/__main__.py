@@ -111,6 +111,8 @@ def _run(args, config, env, fetch, out) -> int:
         (folder / f"radar-{day}.md").write_text(text, encoding="utf-8")
         print(f"Wrote radar-{day}.md in the radar folder.", file=out)
         unposted = dataclasses.replace(report, candidates=tuple(c for c in report.candidates if c.key not in seen))
+        if unposted.candidates and post.webhook(env):
+            state.write_posted(folder, {c.key: post.candidate_facts(c, day) for c in unposted.candidates})
         if post.notify(unposted, snap.sources_ok == 0, env, hosts, out):
             updated = state.mark_seen(seen, (c.key for c in report.candidates), day)
             if updated != seen:

@@ -1,6 +1,6 @@
 # News radar
 
-The radar finds new open-weight models from a fixed list of organizations and writes a ranked list of up to three candidates a day. A person picks one to write up. The radar posts the candidates to Slack as text. It does not open pull requests or write pages.
+The radar finds new open-weight models from a fixed list of organizations and writes a ranked list of up to three candidates a day. It posts the candidates to Slack, each with a "Write this up" button. The radar itself does not open pull requests or write pages. A click on the button does that, through the news listener (see "Write this up" in `docs/news-pr.md`).
 
 ## What it reads
 
@@ -43,6 +43,7 @@ The radar folder is `HARNESS_RADAR_DIR`. When it is not set, it is a `radar` fol
 | `radar-YYYY-MM-DD.md` | the day's list, the same text the run prints |
 | `seen.json` | family key to the first day it was suggested |
 | `rejected.json` | family keys never to suggest again (read only, a list or an object) |
+| `posted.json` | family key to the facts the Slack message showed: id, org, Hugging Face link, release date, license, gated, official and press links. Written just before a post. The Write this up button drafts from it. |
 
 A family key is the author and the name words without sizes, markers, dates and words such as instruct, for example `qwen/qwen-3-5`. A key suggested on an earlier day is not suggested again. Running twice on one day gives the same list.
 
@@ -82,15 +83,16 @@ An org with `verified: false` has not been checked against the live APIs. Its ca
 
 ## Slack message
 
-A normal run (not `--dry-run`, not `--backtest`) posts one message when it has at least one new candidate. A candidate that is in `seen.json` or `rejected.json` is not new. The message has no `@here` and no mentions, and no buttons yet.
+A normal run (not `--dry-run`, not `--backtest`) posts one message when it has at least one new candidate. A candidate that is in `seen.json` or `rejected.json` is not new. The message has no `@here` and no mentions.
 
-It starts with `News radar, 4 Nov 2026`. Then each candidate has a block:
+It starts with `News radar, 4 Nov 2026`. Then each candidate has a block with a "Write this up" button next to it:
 
 - the model name, then its org, release date and license tag (and "gated" when it is gated)
 - `Why it passed`: the signals that made it a candidate
 - `Hugging Face`, `Official post` and `Press` links, when there are any
 - `Maybe covered by`: slugs of pages that may already cover it, when there are any. It is a flag to check, not a rejection.
-- `To write this one up, tell the harness session: go for <family key>`. The family key is the name to give the harness session.
+
+The button's value is the candidate's family key and nothing else. Only the candidates in this message get a button. The message ends with one line: "Write this up drafts the page with Claude and opens a draft PR with the claims table. Only the news reviewer can use it." The same text, without the buttons, is the fallback Slack shows in notifications.
 
 When the message is sent for a candidate, API-only models appear below it under `Watch (weights not public yet)`, in one line. A run with no new candidate posts nothing, even when there are API-only models.
 
