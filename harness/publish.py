@@ -249,8 +249,6 @@ def render_price_page(today_sheet, previous_sheet, scripted_days, notes, sheet_r
     body = _add_captions(body, t, p, len(load_main_models(main_models))).rstrip("\n")
     tables = parse_page_tables(body)
     n_main, n_other = len(tables.get("Main models", [])), len(tables.get("All other models", []))
-    days = _join([fmt_day(d) for d in scripted_days])
-    sheets = "sheet" if len(scripted_days) == 1 else "sheets"
     today_name, prev_name = Path(today_sheet).name, Path(previous_sheet).name
     blob = f"{harness_repo_url}/blob/main/{sheet_repo_dir}/{today_name}"
     return f"""---
@@ -266,7 +264,7 @@ canonical: https://starfield.net/research/prices/{iso}/
 ---
 Prices read on {t}. The Change column compares each price with the read on {p}. {change_sentence(prev, changes)} Every price is published by its provider. This is not a ranking of models, and a price does not say how good a model is.
 
-We read each price from the provider's own pricing page. From {fmt_day(SCRIPT_READS_FROM)} a script reads the pages, and it read the pages for this {t} sheet. The sheets before {fmt_day(SCRIPT_READS_FROM)} were read by hand. Google's rows on the {days} {sheets} were read by script, not from an archived copy. We do not use third-party price trackers. [How Model Watch gets its numbers](/research/methodology/) has the full method.
+We read each price from the provider's own pricing page. We do not use third-party price trackers. [How Model Watch gets its numbers](/research/methodology/) has the full method.
 
 These are standard short-prompt prices only. Prices from different dates never share a table. Each table below is the {t} read.
 
