@@ -75,11 +75,15 @@ CI_FAILED_AFTER = "the approval commit is pushed but a GitHub check failed on it
 CHECKS_FAILED = ("a check failed when the PR was opened. Close the PR on GitHub, fix the page, and run the PR "
                  "script again.")
 CI_FAILED = "a GitHub check failed on the newest commit."
-NO_ROW = ("the keyword row is not on this branch. When the row is on main, press Update branch on the PR page on "
-          "GitHub, then press Check again.")
 # _sh refuses merge and force tokens. These would delete, update or reopen a branch or a PR.
 REFUSED_TOKENS = {"--delete-branch", "-d", "--delete", "update-branch", "reopen"}
 FAILED_RUNS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"}
+
+
+def no_row(slug: str) -> str:
+    return (f"the keyword row is not on this branch. Send news-rows/{slug}.json to the SEO session; Approved appears "
+            "after the row is merged and pinned. Then press Update branch on the PR page on GitHub, and press Check "
+            "again.")
 
 
 def _blocked(f: PrFacts) -> str | None:
@@ -88,7 +92,7 @@ def _blocked(f: PrFacts) -> str | None:
     if f.ci is Ci.FAILED:
         return CI_FAILED
     if not f.branch.row_ok:
-        return NO_ROW
+        return no_row(f.marker.slug)
     return None
 
 

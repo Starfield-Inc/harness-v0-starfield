@@ -56,12 +56,21 @@ def public_hosts(sources) -> frozenset[str]:
     return frozenset({"github.com", *(h for s in sources if (h := (urlsplit(s.url).hostname or "").lower()))})
 
 
-def build_body(item: NewsItem, checks, keyword: KeywordRow, env, key: str | None = None):
+def claims_section(claims: str) -> list[str]:
+    """The drafted claims table, as Claude wrote it. An HTML comment opener is escaped, so the text can never
+    add a second marker."""
+    return ["## Claims", "", "Claude drafted this page. Each claim it makes, with the link that backs it. Open each "
+            "link and check that it says what the claim says.", "", claims.strip().replace("<!--", "&lt;!--"), ""]
+
+
+def build_body(item: NewsItem, checks, keyword: KeywordRow, env, key: str | None = None, claims: str | None = None):
     """(body, checks). A line that still matches the privacy patterns after the scrub is blanked and adds a FAIL.
-    The PR always opens as a draft, so the body and the marker say whether the checks passed."""
+    The PR always opens as a draft, so the body and the marker say whether the checks passed. claims is the
+    claims.md a Write this up draft wrote; it goes before the sources table."""
     sources = item.page.sources()
     summary = [f"Adds the coverage page \"{item.title}\" as a draft (draft: true, no approval fields), with its "
                "cover, its SEO golden entry and any shared page blocks `npm run pages` changed.", "",
+               *(claims_section(claims) if claims else []),
                "## Sources", "", "Each https link on the page, with the claim or table row it backs.", "",
                *source_table(sources)]
     hosts = public_hosts(sources)

@@ -9,7 +9,7 @@ from datetime import datetime
 from harness import slack_notify
 from harness.checks import FAIL, FLAG
 from harness.news_pr import review
-from harness.news_pr.model import Ci, Click, Outcome, PrFacts, PrState, Verb
+from harness.news_pr.model import Ci, Click, Outcome, PrFacts, PrState, Verb, WriteUp
 from harness.radar.post import webhook
 from harness.radar.report import scrub_report
 from harness.slack_notify import _esc, _pr_link, check_lines
@@ -106,6 +106,12 @@ def working_note(click: Click) -> str:
             "This takes a few minutes. A second click is safe.")
 
 
+def write_up_note(click: WriteUp, minutes: int) -> str:
+    """The ephemeral note posted right after the ack of a Write this up click."""
+    return (f"Drafting {click.key}, clicked {local_time(click.at)}, about {minutes} minutes. The result is posted "
+            "here. A second click is safe.")
+
+
 def local_time(dt: datetime, now: datetime | None = None) -> str:
     """The Mac's local time with the zone name, as "14:05 EAT", with the day added when it is not today."""
     here = dt.astimezone()
@@ -144,11 +150,16 @@ def _payload(content: Card | str, env, ephemeral: bool) -> dict:
     return payload
 
 
-def reply(click: Click, content: Card | str, env, out, ephemeral: bool = False) -> bool:
+def _subject(click: Click | WriteUp) -> str:
+    return f"the write-up of {click.key}" if isinstance(click, WriteUp) else f"PR #{click.pr}"
+
+
+def reply(click: Click | WriteUp, content: Card | str, env, out, ephemeral: bool = False) -> bool:
     """POST to click.response_url: replace_original true with a Card, or a new message with a text, or
     response_type ephemeral with a text. An ephemeral reply reads only response_url, so listen.NotApprover
     works too. On a non-2xx or a network error, and not ephemeral, post the content
-    through the webhook with "Update on PR #n:" first. Never raises, never prints a URL. Scrubbed."""
+    through the webhook with "Update on PR #n:" (or "Update on the write-up of <key>:") first. Never raises,
+    never prints a URL. Scrubbed."""
     try:
         status = slack_notify.post(click.response_url, _payload(content, env, ephemeral))
         if 200 <= status < 300:
@@ -162,7 +173,7 @@ def reply(click: Click, content: Card | str, env, out, ephemeral: bool = False) 
     if ephemeral:
         return False
     try:
-        head = f"Update on PR #{click.pr}:"
+        head = f"Update on {_subject(click)}:"
         if isinstance(content, Card):
             return slack_notify.send(webhook(env), f"{head} {content.text}", env, out, scrubber=_scrubber,
                                      blocks=[_mrkdwn(head), *content.blocks])

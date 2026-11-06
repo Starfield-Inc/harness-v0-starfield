@@ -578,7 +578,7 @@ class Refusals(Base):
         w.start()
         w.click(APPROVE, "r1")
         refused = w.final("r1")
-        self.assertIn("Approved was not done: " + review.NO_ROW, text_of(refused))
+        self.assertIn("Approved was not done: " + review.no_row(SLUG), text_of(refused))
         self.assertEqual(buttons(refused), [REJECT, CHECK])
         self.assertEqual(w.head(), w.branch0)
         self.assertFalse([c for c in w.site_calls() if "news:approve" in c])

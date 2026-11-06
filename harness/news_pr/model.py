@@ -138,6 +138,17 @@ class Click:
     response_url: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class WriteUp:
+    """One accepted click on Write this up in the radar card, by the approver. Built only by listen.parse_click.
+    key comes from the button value and matches FAMILY_KEY; the other fields are as in Click."""
+    id: str
+    key: str
+    user: str
+    at: datetime
+    response_url: str = field(repr=False)
+
+
 class PrState(enum.Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"

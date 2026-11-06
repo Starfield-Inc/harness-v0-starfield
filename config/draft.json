@@ -1,0 +1,5 @@
+{
+  "max_turns": 40,
+  "timeout_minutes": 25,
+  "expected_minutes": 10
+}

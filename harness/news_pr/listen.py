@@ -4,6 +4,7 @@
     python3 -m harness.news_pr.listen --drain    settle the saved clicks once, then exit
 
 The daemon is one thread: read a frame, save the click file, ack, post the ephemeral note, spawn a drain.
+Clicks are the PR card's buttons (pr-<n>.json) and the radar card's Write this up (write-<org>+<family>.json).
 Slack never sends a click again after the ack, so the click file is written before it. The slow work runs in
 the --drain child under the harness-news-pr lock, the same lock the PR job takes."""
 import fcntl
@@ -23,8 +24,9 @@ from urllib.parse import urlsplit
 
 from harness import socket_mode
 from harness.daily import Lock, LockError, LockHeld, load_env
-from harness.news_pr import review, slack
-from harness.news_pr.model import Click, Verb
+from harness.news_pr import draft, review, slack
+from harness.news_pr.model import FAMILY_KEY, Click, Verb, WriteUp
+from harness.radar.post import WRITE_UP
 from harness.news_pr.run import NewsDirError, news_dir
 from harness.publish import run_command
 from harness.radar.state import write_json
@@ -81,25 +83,38 @@ def _when(action_ts, now: datetime) -> datetime:
         return now
 
 
+def _value_ok(action_id, value) -> bool:
+    if not isinstance(value, str) or not value.isascii():
+        return False
+    if action_id == WRITE_UP:
+        return len(value) <= 200 and bool(FAMILY_KEY.fullmatch(value))
+    return value.isdigit() and len(value) <= 9 and int(value) >= 1
+
+
 def parse_click(payload: dict, approver: str, now: datetime, envelope_id: str | None = None,
-                loopback: bool = False) -> Click | NotApprover | None:
-    """block_actions only; action_id in Verb; value digits only; response_url host checked. None otherwise.
-    The only place Slack JSON becomes a Click. The id is the envelope_id, else the payload's trigger_id."""
+                loopback: bool = False) -> Click | WriteUp | NotApprover | None:
+    """block_actions only; action_id in Verb or write_up; value digits only for Verb, a family key for write_up;
+    response_url host checked. None otherwise. The only place Slack JSON becomes a Click or a WriteUp. The id
+    is the envelope_id, else the payload's trigger_id."""
     if not isinstance(payload, dict) or payload.get("type") != "block_actions":
         return None
     actions, user = payload.get("actions"), payload.get("user")
     if not isinstance(actions, list) or not actions or not isinstance(actions[0], dict) or not isinstance(user, dict):
         return None
     action = actions[0]
-    verb = next((v for v in Verb if v.value == action.get("action_id")), None)
+    action_id = action.get("action_id")
+    verb = next((v for v in Verb if v.value == action_id), None)
     value, url = action.get("value"), payload.get("response_url")
     click_id = envelope_id or payload.get("trigger_id")
-    if (verb is None or not isinstance(value, str) or not value.isascii() or not value.isdigit() or len(value) > 9
-            or int(value) < 1 or not _response_url_ok(url, loopback) or not isinstance(click_id, str) or not click_id):
+    if ((verb is None and action_id != WRITE_UP) or not _value_ok(action_id, value)
+            or not _response_url_ok(url, loopback) or not isinstance(click_id, str) or not click_id):
         return None
     if not approver or user.get("id") != approver:
         return NotApprover(url)
-    return Click(click_id, verb, int(value), approver, _when(action.get("action_ts"), now), url)
+    at = _when(action.get("action_ts"), now)
+    if verb is None:
+        return WriteUp(click_id, value, approver, at, url)
+    return Click(click_id, verb, int(value), approver, at, url)
 
 
 @contextmanager
@@ -114,40 +129,51 @@ def _inbox_lock(folder: Path):
         os.close(fd)
 
 
-def _path(folder: Path, pr: int) -> Path:
-    return folder / f"pr-{pr}.json"
+def _path(folder: Path, click: Click | WriteUp) -> Path:
+    """One file per PR and one per family key, so a later click on the same thing replaces an earlier one."""
+    if isinstance(click, WriteUp):
+        return folder / f"write-{click.key.replace('/', '+')}.json"
+    return folder / f"pr-{click.pr}.json"
 
 
-def _to_json(click: Click) -> dict:
-    return {"id": click.id, "verb": click.verb.value, "pr": click.pr, "user": click.user,
-            "at": click.at.isoformat(), "response_url": click.response_url}
+def _to_json(click: Click | WriteUp) -> dict:
+    data = {"id": click.id, "user": click.user, "at": click.at.isoformat(), "response_url": click.response_url}
+    if isinstance(click, WriteUp):
+        return {**data, "verb": WRITE_UP, "key": click.key}
+    return {**data, "verb": click.verb.value, "pr": click.pr}
 
 
-def _from_json(data, loopback: bool) -> Click:
-    verb = next(v for v in Verb if v.value == data["verb"])
+def _from_json(data, loopback: bool) -> Click | WriteUp:
     at = datetime.fromisoformat(data["at"])
-    if (not isinstance(data["id"], str) or not data["id"] or type(data["pr"]) is not int or data["pr"] < 1
-            or not isinstance(data["user"], str) or at.tzinfo is None
+    if (not isinstance(data["id"], str) or not data["id"] or not isinstance(data["user"], str) or at.tzinfo is None
             or not _response_url_ok(data["response_url"], loopback)):
+        raise ValueError("bad click file")
+    if data["verb"] == WRITE_UP:
+        if not _value_ok(WRITE_UP, data["key"]):
+            raise ValueError("bad click file")
+        return WriteUp(data["id"], data["key"], data["user"], at, data["response_url"])
+    verb = next(v for v in Verb if v.value == data["verb"])
+    if type(data["pr"]) is not int or data["pr"] < 1:
         raise ValueError("bad click file")
     return Click(data["id"], verb, data["pr"], data["user"], at, data["response_url"])
 
 
-def _read(path: Path, loopback: bool) -> Click:
+def _read(path: Path, loopback: bool) -> Click | WriteUp:
     return _from_json(json.loads(path.read_text(encoding="utf-8")), loopback)
 
 
-def _inbox_put(folder: Path, click: Click) -> None:
-    """Write clicks/pr-<n>.json through radar.state.write_json (mode 600: it holds the response_url). A later
-    click on the same PR replaces it."""
+def _inbox_put(folder: Path, click: Click | WriteUp) -> None:
+    """Write the click file through radar.state.write_json (mode 600: it holds the response_url). A later
+    click on the same PR or key replaces it."""
     with _inbox_lock(folder):
-        write_json(_path(folder, click.pr), _to_json(click))
+        write_json(_path(folder, click), _to_json(click))
 
 
-def _inbox_all(folder: Path, loopback: bool = False, log=print) -> list[Click]:
+def _inbox_all(folder: Path, loopback: bool = False, log=print) -> list[Click | WriteUp]:
     """Every saved click, oldest first. An unreadable file is removed and logged."""
     clicks = []
-    for path in sorted(folder.glob("pr-*.json")) if folder.is_dir() else []:
+    paths = sorted([*folder.glob("pr-*.json"), *folder.glob("write-*.json")]) if folder.is_dir() else []
+    for path in paths:
         try:
             clicks.append(_read(path, loopback))
         except FileNotFoundError:
@@ -158,9 +184,9 @@ def _inbox_all(folder: Path, loopback: bool = False, log=print) -> list[Click]:
     return sorted(clicks, key=lambda c: c.at)
 
 
-def _inbox_done(folder: Path, click: Click, loopback: bool = False) -> None:
-    """Remove the PR's click file only if it still holds this click id."""
-    path = _path(folder, click.pr)
+def _inbox_done(folder: Path, click: Click | WriteUp, loopback: bool = False) -> None:
+    """Remove the click file only if it still holds this click id."""
+    path = _path(folder, click)
     with _inbox_lock(folder):
         try:
             same = _read(path, loopback).id == click.id
@@ -201,6 +227,11 @@ def _seconds(env, key, default) -> float:
 
 def _spawn_drain(environ) -> subprocess.Popen:
     return subprocess.Popen([sys.executable, "-m", "harness.news_pr.listen", "--drain"], cwd=REPO, env=environ)
+
+
+def _what(click: Click | WriteUp) -> str:
+    """The click as a log line names it: never the payload or the response_url."""
+    return f"{WRITE_UP} {click.key}" if isinstance(click, WriteUp) else f"PR {click.pr} {click.verb.value}"
 
 
 def _kind(envelope) -> str:
@@ -247,11 +278,13 @@ def _daemon(cfg: Config, env, environ, out, log) -> int:
         try:
             _inbox_put(cfg.inbox, found)
         except OSError as e:
-            log(f"envelope interactive: PR {found.pr} {found.verb.value}: click file not written ({type(e).__name__})")
+            log(f"envelope interactive: {_what(found)}: click file not written ({type(e).__name__})")
             raise RuntimeError("click file not written") from None
         ack()
-        log(f"envelope interactive: PR {found.pr} {found.verb.value}: saved")
-        slack.reply(found, slack.working_note(found), env, out, ephemeral=True)
+        log(f"envelope interactive: {_what(found)}: saved")
+        note = (slack.write_up_note(found, draft.expected_minutes(env)) if isinstance(found, WriteUp) else
+                slack.working_note(found))
+        slack.reply(found, note, env, out, ephemeral=True)
         if child is None or child.poll() is not None:
             spawn()
         else:
@@ -281,11 +314,34 @@ def _daemon(cfg: Config, env, environ, out, log) -> int:
     return 0
 
 
-def _settle(click: Click, cfg: Config, env, out, runner, log) -> None:
+def _settle_write_up(click: WriteUp, env, out, runner, log) -> None:
+    try:
+        settled = draft.settle(click, env, runner)
+    except draft.DraftError as e:
+        log(f"drain: {_what(click)}: could not read the facts")
+        slack.reply(click, f"The write-up of {click.key} did not start: {e}. Click again later.", env, out)
+        return
+    except Exception as e:
+        log(f"drain: {_what(click)}: error {type(e).__name__}")
+        slack.reply(click, f"The write-up of {click.key} could not be handled ({type(e).__name__}). Click again later.",
+                    env, out)
+        return
+    log(f"drain: {_what(click)}: {'PR opened' if settled.outcome else settled.note.splitlines()[0]}")
+    if settled.outcome:
+        slack.notify(settled.outcome, env, out)
+    slack.reply(click, settled.note, env, out)
+
+
+def _settle(click: Click | WriteUp, cfg: Config, env, out, runner, log) -> None:
     if datetime.now(timezone.utc) - click.at > MAX_AGE:
-        log(f"drain: PR {click.pr} {click.verb.value}: older than 24 hours, dropped")
-        slack.reply(click, f"A {slack.LABEL[click.verb]} click on PR #{click.pr} from {slack.local_time(click.at)} "
+        log(f"drain: {_what(click)}: older than 24 hours, dropped")
+        label = "Write this up" if isinstance(click, WriteUp) else slack.LABEL[click.verb]
+        on = click.key if isinstance(click, WriteUp) else f"PR #{click.pr}"
+        slack.reply(click, f"A {label} click on {on} from {slack.local_time(click.at)} "
                     "was more than 24 hours old, so it was dropped. Click again if it is still wanted.", env, out)
+        return
+    if isinstance(click, WriteUp):
+        _settle_write_up(click, env, out, runner, log)
         return
     try:
         settled = review.settle(click, env, runner)

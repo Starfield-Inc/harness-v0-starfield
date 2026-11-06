@@ -13,10 +13,12 @@ from harness.news_pr.model import (NO_ROW, Branch, Ci, Click, KeywordRow, Marker
 from harness.news_pr.page import parse_front_matter
 from harness.news_pr.pr import marker, parse_marker
 from harness.news_pr.review import (ALREADY_READY, ALREADY_REJECTED, CHECKED, CHECKS_FAILED, CI_FAILED,
-                                    CI_FAILED_AFTER, CLOSED, MERGED, MERGED_REJECT, NO_ROW as NO_ROW_WHY, Do,
-                                    Done, Refuse, Step, offered, plan)
+                                    CI_FAILED_AFTER, CLOSED, MERGED, MERGED_REJECT, Do,
+                                    Done, Refuse, Step, no_row, offered, plan)
 from harness.publish import AUTHOR, FORBIDDEN_TOKENS, PublishError
 from tests.test_news_pr import BODY, MAP_HEADER, SLUG, TITLE, front, git
+
+NO_ROW_WHY = no_row(SLUG)
 
 KEY = "qwen/qwen3-5"
 LOGIN = "harness-login"

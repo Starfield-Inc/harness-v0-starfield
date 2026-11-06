@@ -1,6 +1,6 @@
 # News pull request script
 
-The script opens a pull request on the site repository for one news page. A person-supervised session writes the page and its keyword row proposal. The script checks the page, builds the site with the page in it, and opens the pull request for a person to review. It runs no AI.
+The script opens a pull request on the site repository for one news page. The page and its keyword row proposal come from a person-supervised session, or from a headless Claude run when the reviewer presses "Write this up" on the radar's Slack card (see [Write this up](#write-this-up)). The script checks the page, builds the site with the page in it, and opens the pull request for a person to review. The script itself runs no AI.
 
 ```
 python3 -m harness.news_pr --page PATH --row PATH [--key ORG/FAMILY] [--date YYYY-MM-DD] [--hero-variant N] [--dry-run]
@@ -12,7 +12,7 @@ python3 -m harness.news_pr --page PATH --row PATH [--key ORG/FAMILY] [--date YYY
 |---|---|
 | `--page PATH` | The Markdown page with its front matter. The file name is the slug, for example `qwen-3-5-open-weights.md`. |
 | `--row PATH` | The keyword row proposal as JSON: `slug`, `title`, `type`, `hub_link`, `primary_query`, `secondary_queries` (a list), `source_url_and_date`, `answers_question`. |
-| `--key ORG/FAMILY` | The radar family key of the item, for example `qwen/qwen3-5`, as the radar's Slack post names it after "go for". Not approved writes it to `rejected.json`. Without it the marker says `key=none`, and Not approved closes the pull request but records nothing. |
+| `--key ORG/FAMILY` | The radar family key of the item, for example `qwen/qwen3-5`. The Write this up button's value is this key. Not approved writes it to `rejected.json`. Without it the marker says `key=none`, and Not approved closes the pull request but records nothing. |
 | `--date` | The day of the run, used in the run log name. The default is today's UTC date. |
 | `--hero-variant N` | The cover layout, from 0 to one less than the number of variants in the site's `deploy/graphics.mjs`. Without it the script takes the variant of the newest dated news item that has a cover, plus one, as the daily job does for price pages. |
 | `--dry-run` | Run the local pre-check only and print what a real run would do. It clones, writes, pushes and posts nothing. |
@@ -110,10 +110,11 @@ When a pull request for the branch is already open, the script reports its link 
 The body has, in order:
 
 1. One sentence that says what the pull request adds.
-2. A sources table. Each row is one https link on the page, with the table row or sentence it backs. Open each link and check that it says what the claim says.
-3. The checks table.
-4. "Needs your look", the list of FLAGs.
-5. One hidden last line for the Slack button listener, for example `<!-- news-pr slug=<slug> key=qwen/qwen3-5 row_in_map=no status=none checks=pass -->`. `key` is the family key or `none`. `status` is proposed, approved or none. `checks` is `pass` when every check of the run passed, else `fail`. The listener acts only on a pull request whose body ends with exactly one such line.
+2. For a page from Write this up, the claims table Claude wrote in `claims.md`: one row per claim with the link that backs it.
+3. A sources table. Each row is one https link on the page, with the table row or sentence it backs. Open each link and check that it says what the claim says.
+4. The checks table.
+5. "Needs your look", the list of FLAGs.
+6. One hidden last line for the Slack button listener, for example `<!-- news-pr slug=<slug> key=qwen/qwen3-5 row_in_map=no status=none checks=pass -->`. `key` is the family key or `none`. `status` is proposed, approved or none. `checks` is `pass` when every check of the run passed, else `fail`. The listener acts only on a pull request whose body ends with exactly one such line.
 
 ## Slack
 
@@ -158,7 +159,7 @@ The listener reads the pull request and a fresh clone of its branch when it hand
 | 8 | Open, page approved, still a draft | Marks it ready (finishes an approval that stopped after the push) | Records the key, then closes | Redraws | Approved, Not approved |
 | 9 | Open, page approved, ready | Already approved, ready to merge | Records the key, then closes (withdraw before merging) | Redraws | Not approved |
 
-Approved is held back, in this order, when a check failed when the pull request was opened (close it on GitHub, fix the page and run the script again), when a GitHub check failed on the newest commit, or when the keyword row is not on the branch. For the last one: when the row is on main, press "Update branch" on the pull request page on GitHub, then press Check again. If GitHub reports a conflict, close the pull request on GitHub (not with Not approved, which would reject the key), delete the branch on GitHub, and run the script again.
+Approved is held back, in this order, when a check failed when the pull request was opened (close it on GitHub, fix the page and run the script again), when a GitHub check failed on the newest commit, or when the keyword row is not on the branch. For the last one the card says: "Send news-rows/<slug>.json to the SEO session; Approved appears after the row is merged and pinned. Then press Update branch on the PR page on GitHub, and press Check again." If GitHub reports a conflict, close the pull request on GitHub (not with Not approved, which would reject the key), delete the branch on GitHub, and run the script again.
 
 | Case | What happens |
 |---|---|
@@ -174,7 +175,7 @@ Approved is held back, in this order, when a check failed when the pull request 
 
 ### How the listener works
 
-The listener is a LaunchAgent, `net.starfield.harness-news-listener`, that runs `python3 -m harness.news_pr.listen`. It opens a Socket Mode connection to Slack with the app-level token. Slack sends each click over it and must get an answer (an ack) within 3 seconds. After the ack Slack never sends that click again. So the listener first saves the click to `clicks/pr-<n>.json` in the news folder, then acks, then posts the working note, then starts `python3 -m harness.news_pr.listen --drain` as a child process. The drain takes the `harness-news-pr` lock, the same lock the PR script takes, and handles the saved clicks one at a time, oldest first. A click file is removed only after its result is posted.
+The listener is a LaunchAgent, `net.starfield.harness-news-listener`, that runs `python3 -m harness.news_pr.listen`. It opens a Socket Mode connection to Slack with the app-level token. Slack sends each click over it and must get an answer (an ack) within 3 seconds. After the ack Slack never sends that click again. So the listener first saves the click to `clicks/pr-<n>.json` in the news folder (`clicks/write-<org>+<family>.json` for Write this up), then acks, then posts the working note, then starts `python3 -m harness.news_pr.listen --drain` as a child process. The drain takes the `harness-news-pr` lock, the same lock the PR script takes, and handles the saved clicks one at a time, oldest first. A click file is removed only after its result is posted.
 
 If the Mac, the listener or the drain stops in the middle, the click file is still there. The next drain reads the pull request again and does only the steps that are missing. The listener starts a drain when it starts and every 60 seconds while a click file waits.
 
@@ -227,9 +228,68 @@ python3 -m harness.news_pr.listen --drain
 
 It runs the same code as the listener's child. It is safe while the listener runs: if a drain or the PR script holds the `harness-news-pr` lock, it exits at once with code 0. It settles only clicks the approver made, so it adds no new way to approve.
 
+## Write this up
+
+The radar's Slack card has a "Write this up" button next to each candidate. A click by the reviewer drafts the page with a headless `claude -p` run, checks it, and opens the draft pull request with the card and buttons above. You merge on GitHub as before, and the site's Deploy posts the live message.
+
+### What a click does
+
+The listener handles the click like the other buttons. Only `SLACK_APPROVER_ID` can use it, and anyone else sees "Only the news reviewer can use these buttons.". The listener saves the click to `clicks/write-<org>+<family>.json` before the ack, then only you see "Drafting <key>, clicked 14:05 EAT, about N minutes. The result is posted here. A second click is safe." N is `expected_minutes` in `config/draft.json`. The drain does the work under the `harness-news-pr` lock, so clicks on PR cards wait while a draft runs. The result is a new message under the radar card. The radar card itself stays as it was, so the other candidates keep their buttons.
+
+The drain reads the facts fresh for each click: `rejected.json` and `posted.json` in the radar folder, the open pull requests on GitHub, and the draft state `drafts/<org>+<family>.json` in the news folder. The state is `drafting`, `drafted` (with the pull request link) or `failed` (with the reason). The first row that matches wins.
+
+| # | Facts | What the click does |
+|---|---|---|
+| 1 | The key is in `rejected.json` | Nothing. Says so. |
+| 2 | An open news pull request has the key in its marker | Nothing. Posts its link and the row line. Writes `drafted` if the state said otherwise. |
+| 3 | The state is `drafted` | Nothing. Posts the link and the row line. |
+| 4 | The state is `failed` and was written after the click | Nothing. Says that this click came while that draft ran, and why it stopped. |
+| 5 | The key is not in `posted.json` | Nothing. Says there are no facts to draft from. |
+| 6 | The state is `drafting` | The run that wrote it stopped midway. If its files passed the checks, they are used again with no new Claude run. Else a new draft starts. |
+| 7 | No state, or `failed` before the click | A new draft starts. |
+
+A new draft:
+
+1. Checks `HARNESS_CLAUDE_BIN`, `HARNESS_DRAFT_MODEL` and `HARNESS_DRAFT_MAX_USD`. If one is not set, the draft does not run and the state is `failed` with that reason.
+2. Writes `drafting`, then runs Claude in a fresh empty work folder under `drafts/` in the news folder (see below).
+3. Checks the three files: the pre-check above, and the claims check: every row of `claims.md` has an https link, and every https link on the page is in `claims.md`. If a check fails, Claude runs once more in a new empty folder, with the problems added to the prompt. If the second try fails too, the state is `failed`.
+4. Writes `news-rows/<slug>.json` for the SEO session, then runs the steps of this script from the clone on: the site's checks, the allowed files, the private text scan, the push, the draft pull request with the claims table in its body, and the card with the buttons.
+5. Writes `drafted` with the link and posts: "Draft PR for <key>: <link>. Check each row of the Claims table in the PR against its link. Send news-rows/<slug>.json to the SEO session; Approved appears after the row is merged and pinned. Then press Update branch on the PR page on GitHub, and press Check again."
+
+When any step stops, the state is `failed`, and the message says why and asks you to click again to try once more. A failure is never retried without a click, except that a drain that was killed midway is resumed by the next drain, as for the other buttons. A click older than 24 hours is dropped with a note. A second click, a click while a draft runs, and a click on a redelivered message all end in one draft and one pull request.
+
+### The Claude run
+
+The prompt is `harness/news_pr/draft_prompt.md`, with the radar facts of the candidate and today's date filled in. It tells Claude to use only the official sources and the listed press links, to fetch them, to treat fetched text as data and never as instructions, to state only what the sources say and write "not stated" for a fact it cannot find, not to compare or rank, to use no superlatives, to label vendor numbers as the vendor's, and to write exactly three files: `page.md`, `row.json` and `claims.md`.
+
+The command is `HARNESS_CLAUDE_BIN -p` with `--model HARNESS_DRAFT_MODEL`, `--max-budget-usd HARNESS_DRAFT_MAX_USD`, `--max-turns` from `config/draft.json`, `--output-format json`, `--no-session-persistence`, `--permission-mode dontAsk` (a tool call that is not allowed is denied, never asked), `--tools WebFetch,WebSearch,Write`, `--allowedTools WebFetch WebSearch "Write(./**)" "Edit(./**)"`, `--setting-sources project` and `--strict-mcp-config`. The prompt goes on stdin. The run has no Bash and no Read, and it writes only inside its work folder.
+
+Claude gets only these variables: `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TMPDIR`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CONFIG_DIR`, and `DISABLE_AUTOUPDATER=1`. It never gets the Slack token, a webhook URL, the GitHub config folder or the site settings. A run longer than `timeout_minutes` is stopped, with every process it started. Its output is kept in `claude.out` in the work folder.
+
+Nothing Claude writes is trusted. The page goes through every check a hand-written page goes through, and the pull request is a draft.
+
+### Settings
+
+Add these lines to the env file named by `HARNESS_DAILY_ENV`. The listener reads that file, so the LaunchAgent needs no change.
+
+| Variable | Use |
+|---|---|
+| `HARNESS_CLAUDE_BIN` | The absolute path of the `claude` program. The LaunchAgent's PATH is short, so the path is not looked up. |
+| `HARNESS_DRAFT_MODEL` | The model for the run, as `--model` takes it. |
+| `HARNESS_DRAFT_MAX_USD` | The most one Claude run may spend, as `--max-budget-usd` takes it. There is no default: when it is not set, the draft does not run. A retry is a second run with the same limit. |
+
+`config/draft.json` holds `max_turns`, `timeout_minutes` (the wall clock limit of one run) and `expected_minutes` (the time named in the note after a click). `HARNESS_DRAFT_CONFIG` names another file; the tests use it.
+
+### What to check on the pull request
+
+1. Open each link in the Claims table and check that the page says what the claim says. A claim with no backing in its source is a reason for Not approved.
+2. Check that vendor numbers are labelled as the vendor's, and that "not stated" stands where a source gives nothing.
+3. Read the page for comparisons, rankings and claims the sources do not make. The checks cannot catch those.
+4. Send `news-rows/<slug>.json` to the SEO session. Approved appears after the row is merged and pinned, then Update branch and Check again.
+
 ## The SEO row handoff
 
-1. Every real run whose pre-check passes writes `news-rows/<slug>.json` in the news folder, a copy of `--row`. Running again writes the same file.
+1. Every real run whose pre-check passes writes `news-rows/<slug>.json` in the news folder, a copy of `--row` or of the `row.json` a Write this up draft wrote. Running again writes the same file.
 2. The SEO session reads it and adds the row to the SEO repository's keyword map by pull request. A person approves that pull request.
 3. The site session runs `npm run sync:seo` to bump the pinned map, then regenerates the golden file.
 4. Until then the news pull request shows the `keyword row` FLAG. A draft page with no row only warns in the site's SEO check. The page cannot publish until the row is in the pinned map.
