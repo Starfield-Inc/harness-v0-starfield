@@ -125,7 +125,8 @@ class LiveMessageTest(Base):
     def test_real_files(self):
         text = s.build_live_message(date(2026, 10, 30), self.PAGES, SPEED30, [SPEED29], PRICE30, PRICE29)
         lines = text.split("\n")
-        self.assertTrue(text.startswith("<!here> "))
+        self.assertTrue(text.startswith("*Model Watch"))
+        self.assertNotIn("<!here>", text)
         self.assertEqual(lines.index("*Findings*") + 1, lines.index(QWEN))
         self.assertIn("• No price changed since 29 Oct 2026.", lines)
         self.assertEqual(sum(l.startswith("• ") for l in lines), 4)
@@ -200,7 +201,7 @@ class MainTest(Base):
         code, out, post = self.run_main({"SLACK_WEBHOOK_URL_TEST": HOOK, "SLACK_WEBHOOK_URL_MAIN": "https://m.example/x"})
         self.assertEqual(code, 0)
         self.assertEqual(post.call_args.args[0], HOOK)
-        self.assertTrue(post.call_args.args[1]["text"].startswith("<!here>"))
+        self.assertNotIn("<!here>", post.call_args.args[1]["text"])
         self.assertIn(QWEN, post.call_args.args[1]["text"])
 
     def test_main_target_uses_the_main_hook(self):
