@@ -46,7 +46,7 @@ class SiteTest(unittest.TestCase):
         self.assertEqual((code, out), (0, ""))
         lines = post.call_args.args[1]["text"].split("\n")
         self.assertEqual(post.call_args.args[0], HOOK)
-        self.assertEqual(lines[0], "<!here> *Model Watch, 30 Oct 2026*")
+        self.assertEqual(lines[0], "*Model Watch, 30 Oct 2026*")
         self.assertIn(QWEN, lines)
         self.assertIn("• No price changed since 29 Oct 2026.", lines)
         self.assertIn("Model Watch #3 is live: <https://starfield.net/research/model-watch/2026-10-29/"
@@ -64,7 +64,7 @@ class SiteTest(unittest.TestCase):
             today.fromisoformat = date.fromisoformat
             text = site.build(news, self.assets)
         self.assertEqual(text.split("\n"), [
-            "<!here> *News, 4 Nov 2026*", "", "*Live pages*",
+            "*News, 4 Nov 2026*", "", "*Live pages*",
             "Example Model: what the release shows is live: <https://starfield.net/news/example-model/"
             "|starfield.net/news/example-model/>"])
 
@@ -72,7 +72,7 @@ class SiteTest(unittest.TestCase):
         news = {"url": "https://starfield.net/news/example-model/", "path": "/news/example-model/",
                 "title": "Example Model", "kind": "news", "date": None, "status": "new"}
         text = site.build([*PAGES, news], self.assets)
-        self.assertTrue(text.startswith("<!here> *Model Watch, 30 Oct 2026*"))
+        self.assertTrue(text.startswith("*Model Watch, 30 Oct 2026*"))
         self.assertIn("Example Model is live:", text)
 
     def test_missing_csvs_omit_that_part(self):
@@ -117,7 +117,7 @@ class SiteTest(unittest.TestCase):
     def test_undated_pages_do_not_decide_the_findings_day(self):
         self.pages.write_text(json.dumps([PAGES[0], PAGES[2]]))
         lines = self.run_main()[2].call_args.args[1]["text"].split("\n")
-        self.assertEqual(lines[0], "<!here> *Model Watch, 29 Oct 2026*")
+        self.assertEqual(lines[0], "*Model Watch, 29 Oct 2026*")
         self.assertIn("• Qwen3-8B: 239.7 output tokens/s, first token 174 ms", lines)
         self.assertIn("How Model Watch gets its numbers is live: <https://starfield.net/research/methodology/"
                       "|starfield.net/research/methodology/>", lines)
